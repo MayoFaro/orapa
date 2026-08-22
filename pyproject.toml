@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orapa-assistant"
+version = "0.1.0"
+description = "Assistant local d'analyse pour Orapa Mine"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+orapa-assistant = "orapa_assistant.main:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+gui = ["PySide6>=6.8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
