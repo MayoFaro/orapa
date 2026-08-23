@@ -29,6 +29,7 @@ class Observation:
         if self.exit_point is None or self.color is None:
             raise ValueError("Une onde non absorbée exige une sortie et une couleur")
         object.__setattr__(self, "exit_point", normalize_border_point(self.exit_point))
+        object.__setattr__(self, "color", RayColor(self.color))
 
     @property
     def outcome(self) -> RayOutcome:

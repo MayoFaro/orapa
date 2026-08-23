@@ -31,6 +31,22 @@ def test_complementary_triangles_cannot_share_a_diagonal() -> None:
     assert not gems_are_compatible(left, right)
 
 
+def test_pieces_can_share_an_edge_along_a_grid_line() -> None:
+    left = Gem(
+        BaseColor.WHITE,
+        doubled_polygon((0, 0), (1, 0), (1, 1), (0, 1)),
+        "left",
+    )
+    right = Gem(
+        BaseColor.RED,
+        doubled_polygon((1, 0), (2, 0), (2, 1), (1, 1)),
+        "right",
+    )
+
+    assert polygon_relation(left.polygon, right.polygon) == SpatialRelation.TOUCH_EDGE
+    assert gems_are_compatible(left, right)
+
+
 def test_contact_at_one_point_remains_legal() -> None:
     first = Gem(
         BaseColor.WHITE,

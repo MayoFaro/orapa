@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 from ..border import BOTTOM_POINTS, LEFT_POINTS, RIGHT_POINTS, TOP_POINTS
 from ..cell_display import configuration_cell_codes
 from ..colors import RayColor
+from ..history_store import HistoryStore
 from ..raytracer import Configuration
 from ..progressive import ProgressiveSolver
 from ..solver import CellContent, CellObservation, Observation
@@ -38,8 +39,8 @@ COLOR_LABELS = {
     RayColor.YELLOW: "Jaune",
     RayColor.BLUE: "Bleu",
     RayColor.PINK: "Rose",
-    RayColor.LIGHT_YELLOW: "Jaune clair",
-    RayColor.LIGHT_BLUE: "Bleu clair",
+    RayColor.LIGHT_YELLOW: "Jaune citron",
+    RayColor.LIGHT_BLUE: "Bleu ciel",
     RayColor.ORANGE: "Orange",
     RayColor.GREEN: "Vert",
     RayColor.VIOLET: "Violet",
@@ -57,7 +58,7 @@ CELL_CONTENT_LABELS = {
     CellContent.YELLOW: "Pierre jaune",
     CellContent.BLUE: "Pierre bleue",
     CellContent.DIAMOND: "Diamant",
-    CellContent.BLACK_BODY: "Corps noir",
+    CellContent.BLACK_BODY: "Signal absorbé (corps noir)",
 }
 
 
@@ -105,11 +106,17 @@ GEM_LABELS = {
     "black_body": "corps noir",
 }
 
+BOARD_COLUMN_WIDTH = 38
+BOARD_ROW_HEIGHT = 30
+BOTTOM_MARKER_HEIGHT = 20
+RIGHT_MARKER_WIDTH = 26
+
 
 class MainWindow(QMainWindow):
-    def __init__(self, solver) -> None:
+    def __init__(self, solver, history_store: HistoryStore | None = None) -> None:
         super().__init__()
         self.solver = solver
+        self.history_store = history_store
         self._worker: SolverWorker | None = None
         self.setWindowTitle("Orapa Mine Assistant")
         self.resize(900, 650)
@@ -119,18 +126,23 @@ class MainWindow(QMainWindow):
         self.board.setVerticalHeaderLabels(list("ABCDEFGH"))
         self.board.setEditTriggers(QTableWidget.NoEditTriggers)
         self.board.setSelectionMode(QTableWidget.NoSelection)
+        self.board.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.board.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.board.horizontalHeader().setSectionResizeMode(QHeaderView.Fixed)
         self.board.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
-        self.board.horizontalHeader().setDefaultSectionSize(48)
-        self.board.verticalHeader().setDefaultSectionSize(38)
-        self.board.setMinimumWidth(500)
-        self.board.setMaximumWidth(525)
+        self.board.horizontalHeader().setDefaultSectionSize(BOARD_COLUMN_WIDTH)
+        self.board.verticalHeader().setDefaultSectionSize(BOARD_ROW_HEIGHT)
         header_height = self.board.horizontalHeader().sizeHint().height()
         row_height = self.board.verticalHeader().defaultSectionSize()
+        board_width = (
+            self.board.verticalHeader().sizeHint().width()
+            + (self.board.columnCount() * BOARD_COLUMN_WIDTH)
+            + (2 * self.board.frameWidth())
+        )
         board_height = header_height + (self.board.rowCount() * row_height) + (
             2 * self.board.frameWidth()
         )
-        self.board.setFixedHeight(board_height)
+        self.board.setFixedSize(board_width, board_height)
         for row in range(8):
             for column in range(10):
                 item = QTableWidgetItem("·")
@@ -150,7 +162,7 @@ class MainWindow(QMainWindow):
         for marker in RIGHT_POINTS:
             label = QLabel(marker)
             label.setAlignment(Qt.AlignCenter)
-            label.setFixedSize(28, 38)
+            label.setFixedSize(RIGHT_MARKER_WIDTH, BOARD_ROW_HEIGHT)
             right_markers.addWidget(label)
             self.right_marker_labels.append(label)
         right_markers.addStretch()
@@ -171,17 +183,20 @@ class MainWindow(QMainWindow):
         for marker in BOTTOM_POINTS:
             label = QLabel(marker)
             label.setAlignment(Qt.AlignCenter)
-            label.setFixedSize(48, 24)
+            label.setFixedSize(BOARD_COLUMN_WIDTH, BOTTOM_MARKER_HEIGHT)
             bottom_markers.addWidget(label)
             self.bottom_marker_labels.append(label)
         bottom_markers.addStretch()
         bottom_widget = QWidget()
         bottom_widget.setLayout(bottom_markers)
-        bottom_widget.setFixedHeight(24)
+        bottom_widget.setFixedHeight(BOTTOM_MARKER_HEIGHT)
         board_frame.addWidget(bottom_widget, 1, 0)
         self.board_panel = QWidget()
         self.board_panel.setLayout(board_frame)
-        self.board_panel.setFixedHeight(board_height + board_frame.spacing() + 24)
+        self.board_panel.setFixedSize(
+            board_width + board_frame.spacing() + RIGHT_MARKER_WIDTH,
+            board_height + board_frame.spacing() + BOTTOM_MARKER_HEIGHT,
+        )
 
         self.count_label = QLabel()
         self.certainty_label = QLabel()
@@ -262,7 +277,12 @@ class MainWindow(QMainWindow):
         solution_view_row.addWidget(self.solution_view)
         right.addLayout(solution_view_row)
         right.addLayout(form)
-        right.addWidget(QLabel("Historique"))
+        self.history_label = QLabel("Historique")
+        if self.history_store is not None:
+            self.history_label.setToolTip(
+                f"Sauvegarde locale : {self.history_store.path}"
+            )
+        right.addWidget(self.history_label)
         right.addWidget(self.history)
         history_buttons = QHBoxLayout()
         history_buttons.addWidget(self.remove_button)
@@ -271,15 +291,17 @@ class MainWindow(QMainWindow):
 
         self.right_panel = QWidget()
         self.right_panel.setLayout(right)
-        self.right_panel.setFixedWidth(340)
+        self.right_panel.setFixedWidth(320)
 
         layout = QHBoxLayout()
-        layout.addWidget(self.board_panel, 3, Qt.AlignTop)
+        layout.addWidget(self.board_panel, 0, Qt.AlignTop | Qt.AlignLeft)
+        layout.addStretch(1)
         layout.addWidget(self.right_panel)
         central = QWidget()
         central.setLayout(layout)
         self.setCentralWidget(central)
         self._update_result_controls()
+        self._persist_current()
         self.refresh()
 
     def _add_observation(self) -> None:
@@ -319,15 +341,15 @@ class MainWindow(QMainWindow):
         elif self.solver.candidate_count == 1:
             QMessageBox.information(
                 self,
-                "Solution déterminée",
-                "Une unique configuration satisfait toutes les observations.",
+                "Configuration unique dans le modèle",
+                "Le moteur ne conserve qu’une configuration compatible.",
             )
         elif self.solver.candidate_count == 2:
             QMessageBox.information(
                 self,
-                "Deux solutions restantes",
-                "Il ne reste que deux configurations possibles. "
-                "Vous pouvez les comparer avec le sélecteur Afficher.",
+                "Deux configurations retenues",
+                "Le moteur ne conserve que deux configurations dans son "
+                "modèle. Vous pouvez les comparer avec le sélecteur Afficher.",
             )
 
     def _set_busy(self, busy: bool) -> None:
@@ -355,11 +377,18 @@ class MainWindow(QMainWindow):
         operation: Callable[[], None],
         *,
         show_result_alerts: bool = False,
+        persist_current: bool = True,
     ) -> None:
         if self._worker is not None:
             return
         self._set_busy(True)
-        worker = SolverWorker(operation, self)
+
+        def operation_with_persistence() -> None:
+            operation()
+            if persist_current:
+                self._persist_current()
+
+        worker = SolverWorker(operation_with_persistence, self)
         self._worker = worker
 
         def succeeded() -> None:
@@ -370,7 +399,8 @@ class MainWindow(QMainWindow):
 
         def failed(message: str) -> None:
             self._set_busy(False)
-            QMessageBox.critical(self, "Erreur du solveur", message)
+            self.refresh()
+            QMessageBox.critical(self, "Opération impossible", message)
 
         def cleanup() -> None:
             worker.deleteLater()
@@ -394,16 +424,49 @@ class MainWindow(QMainWindow):
             answer = QMessageBox.question(
                 self,
                 "Nouvelle partie",
-                "Effacer tout l’historique et commencer une nouvelle partie ?",
+                "Archiver cette partie et en commencer une nouvelle ?",
             )
             if answer != QMessageBox.Yes:
                 return
-        self._start_solver_task(self.solver.clear)
+
+        def clear_and_archive() -> None:
+            if self.history_store is not None:
+                self.history_store.start_new_game(
+                    include_diamond=getattr(
+                        self.solver, "include_diamond", False
+                    ),
+                    include_black_body=getattr(
+                        self.solver, "include_black_body", False
+                    ),
+                    reason="new_game",
+                )
+            self.solver.clear()
+
+        self._start_solver_task(clear_and_archive, persist_current=False)
+
+    def _persist_current(self) -> None:
+        if self.history_store is None:
+            return
+        self.history_store.save_current(
+            self.solver.history,
+            include_diamond=getattr(self.solver, "include_diamond", False),
+            include_black_body=getattr(
+                self.solver, "include_black_body", False
+            ),
+        )
 
     def closeEvent(self, event) -> None:
         if self._worker is not None and self._worker.isRunning():
             self._worker.requestInterruption()
             self._worker.wait()
+        try:
+            self._persist_current()
+        except OSError as error:
+            QMessageBox.warning(
+                self,
+                "Historique non sauvegardé",
+                f"Impossible d’enregistrer l’historique : {error}",
+            )
         super().closeEvent(event)
 
     def refresh(self) -> None:
@@ -430,7 +493,9 @@ class MainWindow(QMainWindow):
             )
         else:
             self.count_label.setText(
-                f"Solutions exactes restantes : {self.solver.candidate_count}"
+                "Configurations retenues par le modèle : "
+                f"{self.solver.candidate_count}\n"
+                "Énumération exhaustive des domaines filtrés"
             )
         scores = self.solver.rank_next_moves()
         if scores:
@@ -446,7 +511,9 @@ class MainWindow(QMainWindow):
             )
         else:
             if self.solver.candidate_count == 1:
-                self.recommendation_label.setText("Configuration résolue")
+                self.recommendation_label.setText(
+                    "Configuration unique dans le modèle"
+                )
             else:
                 self.recommendation_label.setText(
                     "Recherche de modèles globaux pour classer les actions"
@@ -470,13 +537,31 @@ class MainWindow(QMainWindow):
             item = QListWidgetItem(text)
             item.setData(Qt.UserRole, history_index)
             self.history.addItem(item)
+        if self.history_store is not None:
+            try:
+                archived_count = max(len(self.history_store.sessions()) - 1, 0)
+            except OSError:
+                self.history_label.setText("Historique — sauvegarde indisponible")
+            else:
+                suffix = (
+                    f" — {archived_count} partie(s) archivée(s)"
+                    if archived_count
+                    else ""
+                )
+                self.history_label.setText(
+                    f"Historique — sauvegarde automatique{suffix}"
+                )
 
         certain_gems = tuple(getattr(self.solver, "certain_gems", ()))
         if certain_gems:
             labels = ", ".join(GEM_LABELS.get(gem.name, gem.name) for gem in certain_gems)
-            self.certainty_label.setText(f"Formes certaines : {labels}")
+            self.certainty_label.setText(
+                f"Formes communes aux configurations retenues : {labels}"
+            )
         else:
-            self.certainty_label.setText("Formes certaines : aucune")
+            self.certainty_label.setText(
+                "Formes communes aux configurations retenues : aucune"
+            )
         self._refresh_solution_view()
         self._show_certainties()
 
@@ -488,8 +573,8 @@ class MainWindow(QMainWindow):
         self.solution_view.clear()
         self.solution_view.addItem("Certitudes communes", None)
         if show_choices:
-            self.solution_view.addItem("Solution possible 1", 0)
-            self.solution_view.addItem("Solution possible 2", 1)
+            self.solution_view.addItem("Configuration retenue 1", 0)
+            self.solution_view.addItem("Configuration retenue 2", 1)
             self.solution_view.setCurrentIndex(min(previous, 2))
         else:
             self.solution_view.setCurrentIndex(0)
@@ -586,7 +671,8 @@ class MainWindow(QMainWindow):
             answer = QMessageBox.question(
                 self,
                 "Changer de variante",
-                "Changer les extensions effacera l’historique. Continuer ?",
+                "Changer les extensions archivera cette partie et en "
+                "commencera une nouvelle. Continuer ?",
             )
             if answer != QMessageBox.Yes:
                 diamond_blocker = QSignalBlocker(self.diamond_checkbox)
@@ -601,9 +687,35 @@ class MainWindow(QMainWindow):
                 return
         if not self.black_checkbox.isChecked():
             self.absorbed.setChecked(False)
+        include_diamond = self.diamond_checkbox.isChecked()
+        include_black_body = self.black_checkbox.isChecked()
+        if self.history_store is not None:
+            try:
+                self.history_store.start_new_game(
+                    include_diamond=include_diamond,
+                    include_black_body=include_black_body,
+                    reason="variant_change",
+                )
+            except OSError as error:
+                QMessageBox.critical(
+                    self,
+                    "Historique non sauvegardé",
+                    "Le changement de variante est annulé car l’historique "
+                    f"ne peut pas être archivé : {error}",
+                )
+                diamond_blocker = QSignalBlocker(self.diamond_checkbox)
+                black_blocker = QSignalBlocker(self.black_checkbox)
+                self.diamond_checkbox.setChecked(
+                    getattr(self.solver, "include_diamond", False)
+                )
+                self.black_checkbox.setChecked(
+                    getattr(self.solver, "include_black_body", False)
+                )
+                del diamond_blocker, black_blocker
+                return
         self.solver = ProgressiveSolver(
-            include_diamond=self.diamond_checkbox.isChecked(),
-            include_black_body=self.black_checkbox.isChecked(),
+            include_diamond=include_diamond,
+            include_black_body=include_black_body,
         )
         self._refresh_cell_contents()
         self._update_result_controls()

@@ -132,7 +132,7 @@ class ProgressiveSolver:
         self._representative_candidates = ()
         self._move_scores = []
         self._strategy_sample_count = 0
-        if observations and self._raw_combination_count <= 100_000_000:
+        if observations and self._raw_combination_count <= 150_000_000:
             model_result = solve_orapa_csp(
                 self._filtered_domains,
                 observations,

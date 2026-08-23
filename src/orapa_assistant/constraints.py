@@ -104,9 +104,19 @@ def polygon_relation(first: Polygon, second: Polygon) -> SpatialRelation:
 
 @lru_cache(maxsize=500_000)
 def gems_are_compatible(first: Gem, second: Gem) -> bool:
-    return polygon_relation(first.polygon, second.polygon) in (
-        SpatialRelation.DISJOINT,
-        SpatialRelation.TOUCH_POINT,
+    relation = polygon_relation(first.polygon, second.polygon)
+    if relation in (SpatialRelation.DISJOINT, SpatialRelation.TOUCH_POINT):
+        return True
+    if relation != SpatialRelation.TOUCH_EDGE:
+        return False
+    # Une arête commune sur une ligne de grille sépare deux cases et reste
+    # légale. Une diagonale commune à l'intérieur d'une case ferait en revanche
+    # occuper cette même case par deux pierres, réponse que le jeu ne prévoit pas.
+    return not any(
+        first_segment.slope in ("slash", "backslash")
+        and _collinear_overlap_length(first_segment, second_segment) > 0
+        for first_segment in first.polygon.segments
+        for second_segment in second.polygon.segments
     )
 
 

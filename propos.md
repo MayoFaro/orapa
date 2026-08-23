@@ -258,8 +258,8 @@ jaune               -> jaune
 bleu                -> bleu
 
 rouge + blanc       -> rose
-jaune + blanc       -> jaune clair
-bleu + blanc        -> bleu clair
+jaune + blanc       -> jaune citron
+bleu + blanc        -> bleu ciel
 
 rouge + bleu        -> violet
 rouge + jaune       -> orange
@@ -336,7 +336,14 @@ AJOUTER
 
 # 11. Historique
 
-L’application doit conserver l’historique complet des observations.
+L’application doit conserver durablement l’historique complet des observations.
+Chaque modification est sauvegardée automatiquement dans un journal local. La
+partie en cours est restaurée au lancement suivant avec ses variantes. Le bouton
+« Nouvelle partie » et un changement de variante ouvrent une nouvelle session :
+la précédente reste archivée et n’est jamais écrasée.
+
+Le journal conserve également les anciens instantanés. La suppression d’un
+indice l’enlève donc des contraintes actives sans effacer la trace de sa saisie.
 
 Exemple :
 
@@ -384,7 +391,7 @@ Le logiciel doit afficher en permanence :
 Solutions restantes : N
 ```
 
-Avant que l'énumération complète soit faisable, le moteur maintient des domaines de placements par pièce. Il applique des contraintes relationnelles exactes dérivées des couleurs : une sortie blanche ne dépend que des deux pièces blanches, violet de rouge et bleu, jaune clair de jaune et des deux blanches, etc. Un placement est supprimé lorsqu'il ne possède aucun support dans la relation correspondante. La recherche exhaustive démarre automatiquement lorsque le produit des domaines passe sous un seuil configurable.
+Avant que l'énumération complète soit faisable, le moteur maintient des domaines de placements par pièce. Il applique des contraintes relationnelles exactes dérivées des couleurs : une sortie blanche ne dépend que des deux pièces blanches, violet de rouge et bleu, jaune citron de jaune et des deux blanches, etc. Un placement est supprimé lorsqu'il ne possède aucun support dans la relation correspondante. La recherche exhaustive démarre automatiquement lorsque le produit des domaines passe sous un seuil configurable.
 
 ---
 
@@ -767,7 +774,7 @@ C  -> C   blanc
 E  -> E   jaune
 8  -> 12  rouge
 15 -> 15  gris
-M  -> M   jaune clair
+M  -> M   jaune citron
 H  -> 18  transparent
 13 -> 13  rouge
 9  -> 16  jaune
@@ -876,9 +883,11 @@ d’une pierre blanche, ni son orientation. Le solveur compare les 36 ondes et
 les 80 examens de case encore inutilisés pour proposer l’action qui minimise
 d’abord le nombre de solutions dans le pire cas, puis le nombre moyen attendu.
 
-La contrainte de placement interdit à présent tout contact le long d’une
-arête. Deux demi-cases complémentaires ne peuvent donc pas partager leur
-diagonale. Un contact limité à un seul point reste autorisé.
+Conformément à la règle officielle, deux pierres peuvent se toucher par un
+coin ou partager une ligne de grille entre deux cases. Elles ne peuvent en
+revanche pas occuper simultanément les deux moitiés d’une même case : une
+diagonale partagée à l’intérieur de cette case rendrait la réponse à un examen
+direct ambiguë. Le chevauchement des surfaces intérieures reste interdit.
 ```
 
 Retour attendu :
@@ -1055,7 +1064,8 @@ Le premier produit réellement utilisable doit permettre :
 6. affichage des positions probables ;
 7. classement des meilleures prochaines ondes ;
 8. affichage d’une solution unique lorsqu’elle est déterminée ;
-9. sauvegarde facultative de la partie en cours.
+9. sauvegarde automatique de chaque indice, restauration de la partie en cours
+   et archivage des parties précédentes.
 
 ---
 

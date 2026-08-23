@@ -16,13 +16,14 @@ from orapa_assistant.solver import CellContent, CellObservation, Observation, So
 def test_main_window_can_be_created() -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(Solver([REAL_GAME_SOLUTION]))
-    assert window.right_panel.minimumWidth() == 340
-    assert window.right_panel.maximumWidth() == 340
-    assert window.board.minimumWidth() == 500
+    assert window.right_panel.minimumWidth() == 320
+    assert window.right_panel.maximumWidth() == 320
+    assert window.board.width() < 450
+    assert window.board_panel.width() == window.board.width() + 28
     assert window.reset_button.text() == "Nouvelle partie"
     assert [label.text() for label in window.right_marker_labels] == list(RIGHT_POINTS)
     assert [label.text() for label in window.bottom_marker_labels] == list(BOTTOM_POINTS)
-    assert "Solutions exactes restantes : 1" == window.count_label.text()
+    assert "Configurations retenues par le modèle : 1" in window.count_label.text()
     assert "losange blanc" in window.certainty_label.text()
     assert window.entry_number.currentText() == "1"
     window.show()
@@ -34,6 +35,23 @@ def test_main_window_can_be_created() -> None:
     board_bottom = window.board.mapTo(window, QPoint(0, window.board.height())).y()
     assert first_bottom_marker.x() == board_viewport.x()
     assert board_bottom <= first_bottom_marker.y() <= board_bottom + 3
+    assert window.board.horizontalScrollBar().maximum() == 0
+    assert window.board.verticalScrollBar().maximum() == 0
+    assert window.board.horizontalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
+    assert window.board.verticalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
+    assert window.board.viewport().width() == sum(
+        window.board.columnWidth(column) for column in range(10)
+    )
+    assert window.board.viewport().height() == sum(
+        window.board.rowHeight(row) for row in range(8)
+    )
+    assert window.minimumSizeHint().width() <= 800
+    assert window.color.itemText(window.color.findData(RayColor.LIGHT_YELLOW)) == (
+        "Jaune citron"
+    )
+    assert window.color.itemText(window.color.findData(RayColor.LIGHT_BLUE)) == (
+        "Bleu ciel"
+    )
     window.entry_letter.setCurrentText("A")
     assert window.entry_number.currentText() == "—"
     assert not window.absorbed.isEnabled()
@@ -72,8 +90,8 @@ def test_two_remaining_solutions_can_be_displayed_separately() -> None:
     window = MainWindow(Solver([Configuration(()), REAL_GAME_SOLUTION]))
     assert not window.solution_view.isHidden()
     assert window.solution_view.count() == 3
-    assert window.solution_view.itemText(1) == "Solution possible 1"
-    assert window.solution_view.itemText(2) == "Solution possible 2"
+    assert window.solution_view.itemText(1) == "Configuration retenue 1"
+    assert window.solution_view.itemText(2) == "Configuration retenue 2"
     window.solution_view.setCurrentIndex(2)
     assert any(
         window.board.item(row, column).text() != "·"
