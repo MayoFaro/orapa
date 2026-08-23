@@ -172,8 +172,6 @@ class MainWindow(QMainWindow):
         self.solution_view_label = QLabel("Afficher")
         self.solution_view = QComboBox()
         self.solution_view.currentIndexChanged.connect(self._show_certainties)
-        self.promising_label = QLabel("Questions à fort potentiel")
-        self.promising_queries = QComboBox()
         self.count_label.setWordWrap(True)
         self.certainty_label.setWordWrap(True)
         self.recommendation_label.setWordWrap(True)
@@ -246,8 +244,6 @@ class MainWindow(QMainWindow):
         solution_view_row.addWidget(self.solution_view_label)
         solution_view_row.addWidget(self.solution_view)
         right.addLayout(solution_view_row)
-        right.addWidget(self.promising_label)
-        right.addWidget(self.promising_queries)
         right.addLayout(form)
         right.addWidget(QLabel("Historique"))
         right.addWidget(self.history)
@@ -401,10 +397,18 @@ class MainWindow(QMainWindow):
                 f"{GEM_LABELS.get(name, name)} : {count}"
                 for name, count in domains.items()
             )
+            applied = getattr(self.solver, "applied_relation_count", 0)
+            deferred = getattr(self.solver, "deferred_relation_count", 0)
+            representatives = getattr(self.solver, "strategy_sample_count", 0)
             self.count_label.setText(
-                "Recherche exacte en attente\n"
-                f"Combinaisons brutes avant validation : {raw_count:,}\n"
-                "Ce nombre n’est pas un nombre de solutions.\n"
+                "Propagation relationnelle en cours\n"
+                f"Borne cartésienne après propagation : {raw_count:,}\n"
+                f"Pré-filtres calculés : {applied} — différés : {deferred}\n"
+                + (
+                    f"Hypothèses globales témoins : {representatives}\n"
+                    if representatives else ""
+                )
+                + "Cette borne n’est pas un nombre de solutions.\n"
                 f"{domain_text}"
             )
         else:
@@ -414,19 +418,22 @@ class MainWindow(QMainWindow):
         scores = self.solver.rank_next_moves()
         if scores:
             best = scores[0]
+            qualifier = (
+                "exacte"
+                if getattr(self.solver, "recommendation_exact", True)
+                else "estimée"
+            )
             self.recommendation_label.setText(
-                f"Action conseillée : {best.label}\n"
+                f"Action conseillée ({qualifier}) : {best.label}\n"
                 f"Pire cas : {best.worst_case} — Entropie : {best.entropy:.2f} bits"
             )
         else:
-            promising = tuple(
-                getattr(self.solver, "promising_cell_actions", ())
-            )
-            self.recommendation_label.setText(
-                f"{len(promising)} examen(s) peuvent déclencher la recherche exacte."
-                if promising else "Action conseillée : —"
-            )
-        self._refresh_promising_queries()
+            if self.solver.candidate_count == 1:
+                self.recommendation_label.setText("Configuration résolue")
+            else:
+                self.recommendation_label.setText(
+                    "Recherche de modèles globaux pour classer les actions"
+                )
 
         self.history.clear()
         for history_index in range(len(self.solver.history) - 1, -1, -1):
@@ -472,20 +479,6 @@ class MainWindow(QMainWindow):
         del blocker
         self.solution_view_label.setVisible(show_choices)
         self.solution_view.setVisible(show_choices)
-
-    def _refresh_promising_queries(self) -> None:
-        actions = tuple(getattr(self.solver, "promising_cell_actions", ()))
-        blocker = QSignalBlocker(self.promising_queries)
-        self.promising_queries.clear()
-        for observation, branch_size in actions:
-            self.promising_queries.addItem(
-                f"{observation.cell} → {CELL_CONTENT_LABELS[observation.content]} "
-                f"(estimation brute : {branch_size:,})"
-            )
-        del blocker
-        visible = bool(actions) and not self.solver.exact
-        self.promising_label.setVisible(visible)
-        self.promising_queries.setVisible(visible)
 
     @staticmethod
     def _configure_border_pair(

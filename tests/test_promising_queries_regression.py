@@ -1,6 +1,6 @@
 from orapa_assistant.colors import RayColor as C
 from orapa_assistant.progressive import ProgressiveSolver
-from orapa_assistant.solver import CellContent, Observation
+from orapa_assistant.solver import Observation
 
 
 HISTORY_BEFORE_G10 = (
@@ -21,11 +21,9 @@ HISTORY_BEFORE_G10 = (
 )
 
 
-def test_g10_black_is_suggested_before_the_decisive_question() -> None:
+def test_relational_solver_finishes_before_the_former_g10_question() -> None:
     solver = ProgressiveSolver(include_diamond=True, include_black_body=True)
     solver.add_observations(HISTORY_BEFORE_G10)
-    assert solver.raw_combination_count == 60_546_528
-    assert any(
-        observation.cell == "G10" and observation.content == CellContent.BLACK_BODY
-        for observation, _branch_size in solver.promising_cell_actions
-    )
+    assert solver.raw_combination_count == 1
+    assert solver.exact
+    assert solver.candidate_count == 1

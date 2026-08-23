@@ -1123,3 +1123,44 @@ le joueur peut proposer la solution
 Le logiciel doit donc être conçu comme un **solveur de contraintes géométriques interactif avec optimisation informationnelle des coups**.
 
 La priorité n’est pas seulement de trouver la solution, mais de la trouver avec le **plus petit nombre possible d’ondes**, puisque l’adversaire dispose des mêmes informations et cherche lui aussi à résoudre la grille avant nous.
+
+---
+
+# 44. Nouveau cœur relationnel
+
+Le produit indépendant des nombres de placements n'est plus utilisé comme
+ensemble de solutions. Le moteur distingue désormais :
+
+* les domaines de placements, qui donnent seulement une borne cartésienne ;
+* les relations entre placements imposées par chaque observation ;
+* les modèles globaux, qui placent toutes les pièces et reproduisent réellement
+  toutes les observations.
+
+Chaque onde est représentée par une contrainte globale sur toutes les pièces.
+Un générateur paresseux construit des témoins de trajet sous forme de masques de
+placements. Ces témoins tiennent compte des surfaces rencontrées, des pièces
+qui doivent rester après le prochain impact, des couleurs, du diamant, du corps
+noir, des impacts simultanés et des absorptions.
+
+La recherche d'un support possède trois résultats distincts :
+
+```text
+FOUND       un témoin exact existe
+IMPOSSIBLE  l'absence de support a été prouvée
+UNKNOWN     le budget de calcul a été atteint
+```
+
+`UNKNOWN` ne permet jamais d'éliminer un placement ni d'annoncer une
+certitude. Les contraintes géométriques et les témoins de rayon sont propagés
+jusqu'à stabilité par un CSP à domaines finis. Les modèles retournés sont
+ensuite vérifiés une dernière fois avec le simulateur complet.
+
+Les certitudes exactes sont obtenues par absence de contre-exemple. Une
+configuration est déclarée unique seulement lorsque la recherche complète ne
+trouve aucun second modèle. Lorsque la recherche est bornée, les actions sont
+classées sur des modèles globaux vérifiés et l'interface qualifie explicitement
+la recommandation d'« estimée ».
+
+La validation du moteur repose d'abord sur des oracles exhaustifs de petits
+domaines et des problèmes générés déterministes. Les historiques de parties
+réelles servent uniquement de tests de régression et de benchmarks.
