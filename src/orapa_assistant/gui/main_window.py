@@ -125,6 +125,12 @@ class MainWindow(QMainWindow):
         self.board.verticalHeader().setDefaultSectionSize(38)
         self.board.setMinimumWidth(500)
         self.board.setMaximumWidth(525)
+        header_height = self.board.horizontalHeader().sizeHint().height()
+        row_height = self.board.verticalHeader().defaultSectionSize()
+        board_height = header_height + (self.board.rowCount() * row_height) + (
+            2 * self.board.frameWidth()
+        )
+        self.board.setFixedHeight(board_height)
         for row in range(8):
             for column in range(10):
                 item = QTableWidgetItem("·")
@@ -136,7 +142,9 @@ class MainWindow(QMainWindow):
         board_frame.setSpacing(2)
         board_frame.addWidget(self.board, 0, 0)
         right_markers = QVBoxLayout()
-        right_markers.setContentsMargins(0, 25, 0, 0)
+        right_markers.setContentsMargins(
+            0, header_height + self.board.frameWidth(), 0, 0
+        )
         right_markers.setSpacing(0)
         self.right_marker_labels = []
         for marker in RIGHT_POINTS:
@@ -148,9 +156,16 @@ class MainWindow(QMainWindow):
         right_markers.addStretch()
         right_widget = QWidget()
         right_widget.setLayout(right_markers)
+        right_widget.setFixedHeight(board_height)
         board_frame.addWidget(right_widget, 0, 1)
         bottom_markers = QHBoxLayout()
-        bottom_markers.setContentsMargins(30, 0, 0, 0)
+        bottom_markers.setContentsMargins(
+            self.board.verticalHeader().sizeHint().width()
+            + self.board.frameWidth(),
+            0,
+            0,
+            0,
+        )
         bottom_markers.setSpacing(0)
         self.bottom_marker_labels = []
         for marker in BOTTOM_POINTS:
@@ -162,9 +177,11 @@ class MainWindow(QMainWindow):
         bottom_markers.addStretch()
         bottom_widget = QWidget()
         bottom_widget.setLayout(bottom_markers)
+        bottom_widget.setFixedHeight(24)
         board_frame.addWidget(bottom_widget, 1, 0)
         self.board_panel = QWidget()
         self.board_panel.setLayout(board_frame)
+        self.board_panel.setFixedHeight(board_height + board_frame.spacing() + 24)
 
         self.count_label = QLabel()
         self.certainty_label = QLabel()
@@ -172,8 +189,6 @@ class MainWindow(QMainWindow):
         self.solution_view_label = QLabel("Afficher")
         self.solution_view = QComboBox()
         self.solution_view.currentIndexChanged.connect(self._show_certainties)
-        self.promising_label = QLabel("Questions à fort potentiel")
-        self.promising_queries = QComboBox()
         self.count_label.setWordWrap(True)
         self.certainty_label.setWordWrap(True)
         self.recommendation_label.setWordWrap(True)
@@ -246,8 +261,6 @@ class MainWindow(QMainWindow):
         solution_view_row.addWidget(self.solution_view_label)
         solution_view_row.addWidget(self.solution_view)
         right.addLayout(solution_view_row)
-        right.addWidget(self.promising_label)
-        right.addWidget(self.promising_queries)
         right.addLayout(form)
         right.addWidget(QLabel("Historique"))
         right.addWidget(self.history)
@@ -261,7 +274,7 @@ class MainWindow(QMainWindow):
         self.right_panel.setFixedWidth(340)
 
         layout = QHBoxLayout()
-        layout.addWidget(self.board_panel, 3)
+        layout.addWidget(self.board_panel, 3, Qt.AlignTop)
         layout.addWidget(self.right_panel)
         central = QWidget()
         central.setLayout(layout)
@@ -401,10 +414,18 @@ class MainWindow(QMainWindow):
                 f"{GEM_LABELS.get(name, name)} : {count}"
                 for name, count in domains.items()
             )
+            applied = getattr(self.solver, "applied_relation_count", 0)
+            deferred = getattr(self.solver, "deferred_relation_count", 0)
+            representatives = getattr(self.solver, "strategy_sample_count", 0)
             self.count_label.setText(
-                "Recherche exacte en attente\n"
-                f"Combinaisons brutes avant validation : {raw_count:,}\n"
-                "Ce nombre n’est pas un nombre de solutions.\n"
+                "Propagation relationnelle en cours\n"
+                f"Borne cartésienne après propagation : {raw_count:,}\n"
+                f"Pré-filtres calculés : {applied} — différés : {deferred}\n"
+                + (
+                    f"Hypothèses globales témoins : {representatives}\n"
+                    if representatives else ""
+                )
+                + "Cette borne n’est pas un nombre de solutions.\n"
                 f"{domain_text}"
             )
         else:
@@ -414,19 +435,22 @@ class MainWindow(QMainWindow):
         scores = self.solver.rank_next_moves()
         if scores:
             best = scores[0]
+            qualifier = (
+                "exacte"
+                if getattr(self.solver, "recommendation_exact", True)
+                else "estimée"
+            )
             self.recommendation_label.setText(
-                f"Action conseillée : {best.label}\n"
+                f"Action conseillée ({qualifier}) : {best.label}\n"
                 f"Pire cas : {best.worst_case} — Entropie : {best.entropy:.2f} bits"
             )
         else:
-            promising = tuple(
-                getattr(self.solver, "promising_cell_actions", ())
-            )
-            self.recommendation_label.setText(
-                f"{len(promising)} examen(s) peuvent déclencher la recherche exacte."
-                if promising else "Action conseillée : —"
-            )
-        self._refresh_promising_queries()
+            if self.solver.candidate_count == 1:
+                self.recommendation_label.setText("Configuration résolue")
+            else:
+                self.recommendation_label.setText(
+                    "Recherche de modèles globaux pour classer les actions"
+                )
 
         self.history.clear()
         for history_index in range(len(self.solver.history) - 1, -1, -1):
@@ -472,20 +496,6 @@ class MainWindow(QMainWindow):
         del blocker
         self.solution_view_label.setVisible(show_choices)
         self.solution_view.setVisible(show_choices)
-
-    def _refresh_promising_queries(self) -> None:
-        actions = tuple(getattr(self.solver, "promising_cell_actions", ()))
-        blocker = QSignalBlocker(self.promising_queries)
-        self.promising_queries.clear()
-        for observation, branch_size in actions:
-            self.promising_queries.addItem(
-                f"{observation.cell} → {CELL_CONTENT_LABELS[observation.content]} "
-                f"(estimation brute : {branch_size:,})"
-            )
-        del blocker
-        visible = bool(actions) and not self.solver.exact
-        self.promising_label.setVisible(visible)
-        self.promising_queries.setVisible(visible)
 
     @staticmethod
     def _configure_border_pair(

@@ -31,6 +31,21 @@ class Configuration:
 
 
 @dataclass(frozen=True)
+class LocalHit:
+    """Premier contact d'un placement avec un rayon dans un état donné.
+
+    ``segments`` contient toutes les arêtes du même placement atteintes à la
+    distance minimale.  Conserver l'ensemble des directions sortantes est
+    indispensable pour détecter exactement un impact sur un sommet ambigu.
+    """
+
+    distance: int
+    segments: tuple[Segment, ...]
+    outgoing: frozenset[Direction]
+    absorbed: bool
+
+
+@dataclass(frozen=True)
 class Interaction:
     point: Point
     gem_name: str
@@ -154,8 +169,56 @@ def _reflect(direction: Direction, surface: Segment) -> Direction:
         raise ValueError("Le rayon est colinéaire à une surface") from error
 
 
+def first_local_hit(
+    gem: Gem,
+    position: Point,
+    direction: Direction,
+) -> LocalHit | None:
+    """Retourne le premier impact de ``gem`` seul depuis l'état du rayon.
+
+    Cette primitive est volontairement la même pour le simulateur complet et
+    pour les contraintes symboliques.  Les calculs restent entiers dans les
+    coordonnées doublées du plateau.
+    """
+
+    hits = tuple(
+        (distance, segment)
+        for segment in gem.polygon.segments
+        if (distance := _distance_to_segment(position, direction, segment))
+        is not None
+    )
+    if not hits:
+        return None
+    nearest = min(distance for distance, _ in hits)
+    segments = tuple(segment for distance, segment in hits if distance == nearest)
+    return LocalHit(
+        distance=nearest,
+        segments=segments,
+        outgoing=frozenset(_reflect(direction, segment) for segment in segments),
+        absorbed=gem.absorbs,
+    )
+
+
+def ray_entry_state(entry: str) -> tuple[Point, Direction]:
+    """API publique de conversion d'un point de bord en état initial."""
+
+    return _entry_state(entry.upper())
+
+
+def ray_exit_point(position: Point, direction: Direction) -> str:
+    """API publique donnant la sortie d'un rayon qui ne rencontre plus rien."""
+
+    return _exit_point(position, direction)
+
+
+def advance_ray(position: Point, direction: Direction, distance: int) -> Point:
+    """Avance exactement un rayon d'une distance en coordonnées doublées."""
+
+    return _advance(position, direction, distance)
+
+
 def simulate_ray(configuration: Configuration, entry_point: str) -> RayTrace:
-    position, direction = _entry_state(entry_point.upper())
+    position, direction = ray_entry_state(entry_point)
     encountered: set[BaseColor] = set()
     interactions: list[Interaction] = []
     visited: set[tuple[Point, Direction]] = set()
@@ -166,38 +229,50 @@ def simulate_ray(configuration: Configuration, entry_point: str) -> RayTrace:
             raise RuntimeError("Le rayon est enfermé dans un cycle")
         visited.add(state)
 
-        hits: list[tuple[int, Gem, Segment]] = []
+        hits: list[tuple[Gem, LocalHit]] = []
         for gem in configuration.gems:
-            for segment in gem.polygon.segments:
-                distance = _distance_to_segment(position, direction, segment)
-                if distance is not None:
-                    hits.append((distance, gem, segment))
+            local_hit = first_local_hit(gem, position, direction)
+            if local_hit is not None:
+                hits.append((gem, local_hit))
 
         if not hits:
             return RayTrace(
-                outcome=RayOutcome(_exit_point(position, direction), mix_colors(encountered)),
+                outcome=RayOutcome(
+                    ray_exit_point(position, direction), mix_colors(encountered)
+                ),
                 interactions=tuple(interactions),
             )
 
-        nearest = min(distance for distance, _, _ in hits)
-        nearest_hits = [(gem, segment) for distance, gem, segment in hits if distance == nearest]
-        if any(gem.absorbs for gem, _ in nearest_hits):
+        nearest = min(local_hit.distance for _, local_hit in hits)
+        nearest_hits = [
+            (gem, local_hit)
+            for gem, local_hit in hits
+            if local_hit.distance == nearest
+        ]
+        if any(local_hit.absorbed for _, local_hit in nearest_hits):
             return RayTrace(
                 outcome=RayOutcome.absorption(),
                 interactions=tuple(interactions),
             )
-        outgoing = {_reflect(direction, segment) for _, segment in nearest_hits}
+        outgoing = {
+            new_direction
+            for _, local_hit in nearest_hits
+            for new_direction in local_hit.outgoing
+        }
         if len(outgoing) != 1:
             raise RuntimeError("Collision ambiguë entre plusieurs surfaces")
 
-        hit_point = _advance(position, direction, nearest)
+        hit_point = advance_ray(position, direction, nearest)
         new_direction = outgoing.pop()
-        for gem, _ in nearest_hits:
+        for gem, local_hit in nearest_hits:
             if gem.color is not None:
                 encountered.add(gem.color)
             if gem.color is not None:
-                interactions.append(
-                    Interaction(hit_point, gem.name, gem.color, direction, new_direction)
+                interactions.extend(
+                    Interaction(
+                        hit_point, gem.name, gem.color, direction, new_direction
+                    )
+                    for _ in local_hit.segments
                 )
         position = hit_point
         direction = new_direction

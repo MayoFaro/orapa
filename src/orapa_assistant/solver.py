@@ -66,6 +66,10 @@ class CellObservation:
 SolverObservation = Observation | CellObservation
 
 
+class _InvalidRayOutcome(str, Enum):
+    INVALID = "invalid_ray"
+
+
 def gem_occupies_cell(gem, row: str, column: int) -> bool:
     y = ord(row.upper()) - ord("A")
     cell = doubled_polygon(
@@ -121,7 +125,9 @@ class Solver:
         self._all = tuple(configurations)
         self._history: list[SolverObservation] = []
         self._candidate_ids = list(range(len(self._all)))
-        self._outcome_cache: dict[tuple[int, str], RayOutcome] = {}
+        self._outcome_cache: dict[
+            tuple[int, str], RayOutcome | _InvalidRayOutcome
+        ] = {}
 
     @property
     def history(self) -> tuple[SolverObservation, ...]:
@@ -151,11 +157,17 @@ class Solver:
                 certain.append(placements[0])
         return tuple(sorted(certain, key=lambda gem: gem.name))
 
-    def _outcome(self, configuration_id: int, entry: str) -> RayOutcome:
+    def _outcome(
+        self, configuration_id: int, entry: str
+    ) -> RayOutcome | _InvalidRayOutcome:
         key = (configuration_id, entry)
         if key not in self._outcome_cache:
-            trace = simulate_ray(self._all[configuration_id], entry)
-            self._outcome_cache[key] = trace.outcome
+            try:
+                trace = simulate_ray(self._all[configuration_id], entry)
+            except RuntimeError:
+                self._outcome_cache[key] = _InvalidRayOutcome.INVALID
+            else:
+                self._outcome_cache[key] = trace.outcome
         return self._outcome_cache[key]
 
     def _recompute(self) -> None:
@@ -210,7 +222,7 @@ class Solver:
 
     def rank_next_moves(self, include_used: bool = False) -> list[MoveScore]:
         total = self.candidate_count
-        if total == 0:
+        if total <= 1:
             return []
         used_waves = {
             observation.entry for observation in self._history
