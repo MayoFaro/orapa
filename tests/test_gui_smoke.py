@@ -7,7 +7,11 @@ from PySide6.QtCore import QPoint, Qt
 
 from orapa_assistant.border import BOTTOM_POINTS, RIGHT_POINTS
 from orapa_assistant.examples import REAL_GAME_SOLUTION
-from orapa_assistant.gui.main_window import MainWindow
+from orapa_assistant.gui.main_window import (
+    BOARD_COLUMN_WIDTH,
+    BOARD_ROW_HEIGHT,
+    MainWindow,
+)
 from orapa_assistant.colors import RayColor
 from orapa_assistant.raytracer import Configuration
 from orapa_assistant.solver import CellContent, CellObservation, Observation, Solver
@@ -45,6 +49,19 @@ def test_main_window_can_be_created() -> None:
     assert window.board.viewport().height() == sum(
         window.board.rowHeight(row) for row in range(8)
     )
+    assert all(
+        window.board.columnWidth(column) == BOARD_COLUMN_WIDTH
+        for column in range(10)
+    )
+    assert all(
+        window.board.rowHeight(row) == BOARD_ROW_HEIGHT for row in range(8)
+    )
+    assert [label.width() for label in window.bottom_marker_labels] == [
+        window.board.columnWidth(column) for column in range(10)
+    ]
+    assert [label.height() for label in window.right_marker_labels] == [
+        window.board.rowHeight(row) for row in range(8)
+    ]
     assert window.minimumSizeHint().width() <= 800
     assert window.color.itemText(window.color.findData(RayColor.LIGHT_YELLOW)) == (
         "Jaune citron"

@@ -128,18 +128,36 @@ class MainWindow(QMainWindow):
         self.board.setSelectionMode(QTableWidget.NoSelection)
         self.board.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.board.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.board.horizontalHeader().setSectionResizeMode(QHeaderView.Fixed)
-        self.board.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
-        self.board.horizontalHeader().setDefaultSectionSize(BOARD_COLUMN_WIDTH)
-        self.board.verticalHeader().setDefaultSectionSize(BOARD_ROW_HEIGHT)
-        header_height = self.board.horizontalHeader().sizeHint().height()
-        row_height = self.board.verticalHeader().defaultSectionSize()
+        horizontal_header = self.board.horizontalHeader()
+        vertical_header = self.board.verticalHeader()
+        horizontal_header.setSectionResizeMode(QHeaderView.Fixed)
+        vertical_header.setSectionResizeMode(QHeaderView.Fixed)
+        # Certains thèmes imposent une taille minimale supérieure à la taille
+        # demandée. Il faut la lever avant de redimensionner chaque section,
+        # puis calculer le widget avec les tailles réellement retenues par Qt.
+        horizontal_header.setMinimumSectionSize(1)
+        vertical_header.setMinimumSectionSize(1)
+        horizontal_header.setDefaultSectionSize(BOARD_COLUMN_WIDTH)
+        vertical_header.setDefaultSectionSize(BOARD_ROW_HEIGHT)
+        for column in range(self.board.columnCount()):
+            horizontal_header.resizeSection(column, BOARD_COLUMN_WIDTH)
+        for row in range(self.board.rowCount()):
+            vertical_header.resizeSection(row, BOARD_ROW_HEIGHT)
+        column_widths = tuple(
+            horizontal_header.sectionSize(column)
+            for column in range(self.board.columnCount())
+        )
+        row_heights = tuple(
+            vertical_header.sectionSize(row)
+            for row in range(self.board.rowCount())
+        )
+        header_height = horizontal_header.sizeHint().height()
         board_width = (
-            self.board.verticalHeader().sizeHint().width()
-            + (self.board.columnCount() * BOARD_COLUMN_WIDTH)
+            vertical_header.sizeHint().width()
+            + horizontal_header.length()
             + (2 * self.board.frameWidth())
         )
-        board_height = header_height + (self.board.rowCount() * row_height) + (
+        board_height = header_height + vertical_header.length() + (
             2 * self.board.frameWidth()
         )
         self.board.setFixedSize(board_width, board_height)
@@ -159,10 +177,10 @@ class MainWindow(QMainWindow):
         )
         right_markers.setSpacing(0)
         self.right_marker_labels = []
-        for marker in RIGHT_POINTS:
+        for marker, marker_height in zip(RIGHT_POINTS, row_heights):
             label = QLabel(marker)
             label.setAlignment(Qt.AlignCenter)
-            label.setFixedSize(RIGHT_MARKER_WIDTH, BOARD_ROW_HEIGHT)
+            label.setFixedSize(RIGHT_MARKER_WIDTH, marker_height)
             right_markers.addWidget(label)
             self.right_marker_labels.append(label)
         right_markers.addStretch()
@@ -180,10 +198,10 @@ class MainWindow(QMainWindow):
         )
         bottom_markers.setSpacing(0)
         self.bottom_marker_labels = []
-        for marker in BOTTOM_POINTS:
+        for marker, marker_width in zip(BOTTOM_POINTS, column_widths):
             label = QLabel(marker)
             label.setAlignment(Qt.AlignCenter)
-            label.setFixedSize(BOARD_COLUMN_WIDTH, BOTTOM_MARKER_HEIGHT)
+            label.setFixedSize(marker_width, BOTTOM_MARKER_HEIGHT)
             bottom_markers.addWidget(label)
             self.bottom_marker_labels.append(label)
         bottom_markers.addStretch()
