@@ -3,7 +3,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, Qt
 
 from orapa_assistant.border import BOTTOM_POINTS, RIGHT_POINTS
 from orapa_assistant.examples import REAL_GAME_SOLUTION
@@ -25,6 +25,15 @@ def test_main_window_can_be_created() -> None:
     assert "Solutions exactes restantes : 1" == window.count_label.text()
     assert "losange blanc" in window.certainty_label.text()
     assert window.entry_number.currentText() == "1"
+    window.show()
+    app.processEvents()
+    board_viewport = window.board.viewport().mapTo(window, QPoint(0, 0))
+    first_bottom_marker = window.bottom_marker_labels[0].mapTo(
+        window, QPoint(0, 0)
+    )
+    board_bottom = window.board.mapTo(window, QPoint(0, window.board.height())).y()
+    assert first_bottom_marker.x() == board_viewport.x()
+    assert board_bottom <= first_bottom_marker.y() <= board_bottom + 3
     window.entry_letter.setCurrentText("A")
     assert window.entry_number.currentText() == "—"
     assert not window.absorbed.isEnabled()

@@ -125,6 +125,12 @@ class MainWindow(QMainWindow):
         self.board.verticalHeader().setDefaultSectionSize(38)
         self.board.setMinimumWidth(500)
         self.board.setMaximumWidth(525)
+        header_height = self.board.horizontalHeader().sizeHint().height()
+        row_height = self.board.verticalHeader().defaultSectionSize()
+        board_height = header_height + (self.board.rowCount() * row_height) + (
+            2 * self.board.frameWidth()
+        )
+        self.board.setFixedHeight(board_height)
         for row in range(8):
             for column in range(10):
                 item = QTableWidgetItem("·")
@@ -136,7 +142,9 @@ class MainWindow(QMainWindow):
         board_frame.setSpacing(2)
         board_frame.addWidget(self.board, 0, 0)
         right_markers = QVBoxLayout()
-        right_markers.setContentsMargins(0, 25, 0, 0)
+        right_markers.setContentsMargins(
+            0, header_height + self.board.frameWidth(), 0, 0
+        )
         right_markers.setSpacing(0)
         self.right_marker_labels = []
         for marker in RIGHT_POINTS:
@@ -148,9 +156,16 @@ class MainWindow(QMainWindow):
         right_markers.addStretch()
         right_widget = QWidget()
         right_widget.setLayout(right_markers)
+        right_widget.setFixedHeight(board_height)
         board_frame.addWidget(right_widget, 0, 1)
         bottom_markers = QHBoxLayout()
-        bottom_markers.setContentsMargins(30, 0, 0, 0)
+        bottom_markers.setContentsMargins(
+            self.board.verticalHeader().sizeHint().width()
+            + self.board.frameWidth(),
+            0,
+            0,
+            0,
+        )
         bottom_markers.setSpacing(0)
         self.bottom_marker_labels = []
         for marker in BOTTOM_POINTS:
@@ -162,9 +177,11 @@ class MainWindow(QMainWindow):
         bottom_markers.addStretch()
         bottom_widget = QWidget()
         bottom_widget.setLayout(bottom_markers)
+        bottom_widget.setFixedHeight(24)
         board_frame.addWidget(bottom_widget, 1, 0)
         self.board_panel = QWidget()
         self.board_panel.setLayout(board_frame)
+        self.board_panel.setFixedHeight(board_height + board_frame.spacing() + 24)
 
         self.count_label = QLabel()
         self.certainty_label = QLabel()
@@ -257,7 +274,7 @@ class MainWindow(QMainWindow):
         self.right_panel.setFixedWidth(340)
 
         layout = QHBoxLayout()
-        layout.addWidget(self.board_panel, 3)
+        layout.addWidget(self.board_panel, 3, Qt.AlignTop)
         layout.addWidget(self.right_panel)
         central = QWidget()
         central.setLayout(layout)
