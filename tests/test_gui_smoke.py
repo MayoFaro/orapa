@@ -29,7 +29,11 @@ def test_main_window_can_be_created() -> None:
     assert [label.text() for label in window.bottom_marker_labels] == list(BOTTOM_POINTS)
     assert "Configurations retenues par le modèle : 1" in window.count_label.text()
     assert "losange blanc" in window.certainty_label.text()
-    assert window.entry_number.currentText() == "1"
+    assert window.entry_buttons["1"].isChecked()
+    assert window.exit_buttons["1"].isChecked()
+    assert len(window.entry_buttons) == 36
+    assert len(window.exit_buttons) == 36
+    assert len(window.color_buttons) == len(RayColor)
     window.show()
     app.processEvents()
     board_viewport = window.board.viewport().mapTo(window, QPoint(0, 0))
@@ -39,6 +43,11 @@ def test_main_window_can_be_created() -> None:
     board_bottom = window.board.mapTo(window, QPoint(0, window.board.height())).y()
     assert first_bottom_marker.x() == board_viewport.x()
     assert board_bottom <= first_bottom_marker.y() <= board_bottom + 3
+    wave_top = window.wave_panel.mapTo(window, QPoint(0, 0)).y()
+    board_panel_bottom = window.board_panel.mapTo(
+        window, QPoint(0, window.board_panel.height())
+    ).y()
+    assert wave_top >= board_panel_bottom
     assert window.board.horizontalScrollBar().maximum() == 0
     assert window.board.verticalScrollBar().maximum() == 0
     assert window.board.horizontalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
@@ -62,25 +71,27 @@ def test_main_window_can_be_created() -> None:
     assert [label.height() for label in window.right_marker_labels] == [
         window.board.rowHeight(row) for row in range(8)
     ]
-    assert window.minimumSizeHint().width() <= 800
-    assert window.color.itemText(window.color.findData(RayColor.LIGHT_YELLOW)) == (
-        "Jaune citron"
-    )
-    assert window.color.itemText(window.color.findData(RayColor.LIGHT_BLUE)) == (
-        "Bleu ciel"
-    )
-    window.entry_letter.setCurrentText("A")
-    assert window.entry_number.currentText() == "—"
+    assert window.minimumSizeHint().width() <= 900
+    assert window.color_buttons[RayColor.LIGHT_YELLOW].text() == "Jaune citron"
+    assert window.color_buttons[RayColor.LIGHT_BLUE].text() == "Bleu ciel"
+    window.entry_buttons["A"].click()
+    assert window.entry_buttons["A"].isChecked()
+    assert window.exit_buttons["A"].isChecked()
+    window.exit_buttons["C"].click()
+    assert window.entry_buttons["A"].isChecked()
+    assert window.exit_buttons["C"].isChecked()
+    assert window._selected_border(window.entry_group) == "A"
+    assert window._selected_border(window.exit_group) == "C"
     assert not window.absorbed.isEnabled()
     window.action_type.setCurrentIndex(1)
     assert window.cell_row.isEnabled()
     assert window.cell_content.findData(CellContent.DIAMOND) == -1
-    assert not window.entry_number.isEnabled()
+    assert all(not button.isEnabled() for button in window.entry_buttons.values())
     window.action_type.setCurrentIndex(0)
     window.black_checkbox.setChecked(True)
     window.absorbed.setChecked(True)
-    assert not window.exit_number.isEnabled()
-    assert not window.color.isEnabled()
+    assert all(not button.isEnabled() for button in window.exit_buttons.values())
+    assert all(not button.isEnabled() for button in window.color_buttons.values())
     window.diamond_checkbox.setChecked(True)
     assert window.solver.include_diamond
     assert window.solver.include_black_body

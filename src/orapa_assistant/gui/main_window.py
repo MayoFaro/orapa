@@ -5,6 +5,7 @@ from collections.abc import Callable
 from PySide6.QtCore import QSignalBlocker, QThread, Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QComboBox,
     QCheckBox,
     QFormLayout,
@@ -110,6 +111,30 @@ BOARD_COLUMN_WIDTH = 38
 BOARD_ROW_HEIGHT = 30
 BOTTOM_MARKER_HEIGHT = 20
 RIGHT_MARKER_WIDTH = 26
+POINT_CHIP_WIDTH = 19
+POINT_CHIP_HEIGHT = 20
+COLOR_CHIP_WIDTH = 94
+COLOR_CHIP_HEIGHT = 18
+
+CHIP_STYLE = """
+QPushButton {
+    border: 1px solid #8b949e;
+    border-radius: 7px;
+    background: #f3f4f6;
+    padding: 0;
+}
+QPushButton:checked {
+    border: 2px solid #075985;
+    background: #1685c5;
+    color: white;
+    font-weight: bold;
+}
+QPushButton:disabled {
+    border-color: #c7cbd1;
+    background: #e5e7eb;
+    color: #9ca3af;
+}
+"""
 
 
 class MainWindow(QMainWindow):
@@ -234,11 +259,15 @@ class MainWindow(QMainWindow):
         self.diamond_checkbox.toggled.connect(self._change_variants)
         self.black_checkbox.toggled.connect(self._change_variants)
 
-        self.entry_number = QComboBox()
-        self.entry_letter = QComboBox()
-        self.exit_number = QComboBox()
-        self.exit_letter = QComboBox()
-        self.color = QComboBox()
+        self.entry_group = QButtonGroup(self)
+        self.entry_group.setExclusive(True)
+        self.exit_group = QButtonGroup(self)
+        self.exit_group.setExclusive(True)
+        self.color_group = QButtonGroup(self)
+        self.color_group.setExclusive(True)
+        self.entry_buttons: dict[str, QPushButton] = {}
+        self.exit_buttons: dict[str, QPushButton] = {}
+        self.color_buttons: dict[RayColor, QPushButton] = {}
         self.absorbed = QCheckBox("L’onde a été absorbée")
         self.action_type = QComboBox()
         self.action_type.addItem("Envoyer une onde", "wave")
@@ -250,14 +279,83 @@ class MainWindow(QMainWindow):
         self.cell_content = QComboBox()
         number_points = TOP_POINTS + RIGHT_POINTS
         letter_points = LEFT_POINTS + BOTTOM_POINTS
-        self._configure_border_pair(
-            self.entry_number, self.entry_letter, number_points, letter_points
-        )
-        self._configure_border_pair(
-            self.exit_number, self.exit_letter, number_points, letter_points
-        )
+        for point in number_points + letter_points:
+            entry_button = self._make_chip(
+                point, POINT_CHIP_WIDTH, POINT_CHIP_HEIGHT
+            )
+            entry_button.setProperty("border_point", point)
+            entry_button.clicked.connect(
+                lambda checked, selected=point: self._mirror_entry_to_exit(
+                    selected, checked
+                )
+            )
+            self.entry_group.addButton(entry_button)
+            self.entry_buttons[point] = entry_button
+
+            exit_button = self._make_chip(
+                point, POINT_CHIP_WIDTH, POINT_CHIP_HEIGHT
+            )
+            exit_button.setProperty("border_point", point)
+            self.exit_group.addButton(exit_button)
+            self.exit_buttons[point] = exit_button
+
         for color, label in COLOR_LABELS.items():
-            self.color.addItem(label, color)
+            color_button = self._make_chip(
+                label, COLOR_CHIP_WIDTH, COLOR_CHIP_HEIGHT
+            )
+            color_button.setProperty("ray_color", color.value)
+            self.color_group.addButton(color_button)
+            self.color_buttons[color] = color_button
+
+        self.entry_buttons["1"].setChecked(True)
+        self.exit_buttons["1"].setChecked(True)
+        self.color_buttons[RayColor.TRANSPARENT].setChecked(True)
+
+        point_rows = QVBoxLayout()
+        point_rows.setContentsMargins(0, 0, 0, 0)
+        point_rows.setSpacing(2)
+        for label_text, points, buttons in (
+            ("Entrée chiffres", number_points, self.entry_buttons),
+            ("Entrée lettres", letter_points, self.entry_buttons),
+            ("Sortie chiffres", number_points, self.exit_buttons),
+            ("Sortie lettres", letter_points, self.exit_buttons),
+        ):
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(1)
+            label = QLabel(label_text)
+            label.setFixedWidth(84)
+            row.addWidget(label)
+            for point in points:
+                row.addWidget(buttons[point])
+            point_rows.addLayout(row)
+
+        colors = QVBoxLayout()
+        colors.setContentsMargins(0, 0, 0, 0)
+        colors.setSpacing(1)
+        color_label = QLabel("Couleur")
+        color_label.setAlignment(Qt.AlignCenter)
+        colors.addWidget(color_label)
+        for color in COLOR_LABELS:
+            colors.addWidget(self.color_buttons[color])
+
+        wave_layout = QHBoxLayout()
+        wave_layout.setContentsMargins(0, 0, 0, 0)
+        wave_layout.setSpacing(8)
+        wave_layout.addLayout(point_rows)
+        wave_layout.addLayout(colors)
+        wave_layout.addStretch(1)
+        self.wave_panel = QWidget()
+        self.wave_panel.setLayout(wave_layout)
+
+        left = QVBoxLayout()
+        left.setContentsMargins(0, 0, 0, 0)
+        left.setSpacing(4)
+        left.addWidget(self.board_panel, 0, Qt.AlignTop | Qt.AlignLeft)
+        left.addWidget(self.wave_panel, 0, Qt.AlignTop | Qt.AlignLeft)
+        left.addStretch(1)
+        self.left_panel = QWidget()
+        self.left_panel.setLayout(left)
         self.absorbed.toggled.connect(lambda: self._update_result_controls())
         self.action_type.currentIndexChanged.connect(
             lambda: self._update_result_controls()
@@ -273,11 +371,6 @@ class MainWindow(QMainWindow):
 
         form = QFormLayout()
         form.addRow("Action", self.action_type)
-        form.addRow("Entrée — chiffres", self.entry_number)
-        form.addRow("Entrée — lettres", self.entry_letter)
-        form.addRow("Sortie — chiffres", self.exit_number)
-        form.addRow("Sortie — lettres", self.exit_letter)
-        form.addRow("Couleur", self.color)
         form.addRow(self.absorbed)
         form.addRow("Case — ligne", self.cell_row)
         form.addRow("Case — colonne", self.cell_column)
@@ -312,7 +405,7 @@ class MainWindow(QMainWindow):
         self.right_panel.setFixedWidth(320)
 
         layout = QHBoxLayout()
-        layout.addWidget(self.board_panel, 0, Qt.AlignTop | Qt.AlignLeft)
+        layout.addWidget(self.left_panel, 0, Qt.AlignTop | Qt.AlignLeft)
         layout.addStretch(1)
         layout.addWidget(self.right_panel)
         central = QWidget()
@@ -331,14 +424,14 @@ class MainWindow(QMainWindow):
                     self.cell_content.currentData(),
                 )
             else:
-                entry = self._selected_border(self.entry_number, self.entry_letter)
+                entry = self._selected_border(self.entry_group)
                 if self.absorbed.isChecked():
                     observation = Observation(entry, absorbed=True)
                 else:
                     observation = Observation(
                         entry,
-                        self._selected_border(self.exit_number, self.exit_letter),
-                        self.color.currentData(),
+                        self._selected_border(self.exit_group),
+                        self._selected_color(),
                     )
         except ValueError as error:
             QMessageBox.warning(self, "Saisie incomplète", str(error))
@@ -371,8 +464,6 @@ class MainWindow(QMainWindow):
             )
 
     def _set_busy(self, busy: bool) -> None:
-        self.entry_number.setEnabled(not busy)
-        self.entry_letter.setEnabled(not busy)
         self.action_type.setEnabled(not busy)
         self.cell_row.setEnabled(not busy)
         self.cell_column.setEnabled(not busy)
@@ -601,32 +692,29 @@ class MainWindow(QMainWindow):
         self.solution_view.setVisible(show_choices)
 
     @staticmethod
-    def _configure_border_pair(
-        number_combo: QComboBox,
-        letter_combo: QComboBox,
-        numbers: tuple[str, ...],
-        letters: tuple[str, ...],
-    ) -> None:
-        number_combo.addItem("—")
-        number_combo.addItems(numbers)
-        letter_combo.addItem("—")
-        letter_combo.addItems(letters)
-        number_combo.setCurrentIndex(1)
-        letter_combo.setCurrentIndex(0)
-        number_combo.currentIndexChanged.connect(
-            lambda index: letter_combo.setCurrentIndex(0) if index > 0 else None
-        )
-        letter_combo.currentIndexChanged.connect(
-            lambda index: number_combo.setCurrentIndex(0) if index > 0 else None
-        )
+    def _make_chip(text: str, width: int, height: int) -> QPushButton:
+        button = QPushButton(text)
+        button.setCheckable(True)
+        button.setFixedSize(width, height)
+        button.setStyleSheet(CHIP_STYLE)
+        return button
+
+    def _mirror_entry_to_exit(self, point: str, checked: bool) -> None:
+        if checked:
+            self.exit_buttons[point].setChecked(True)
 
     @staticmethod
-    def _selected_border(number_combo: QComboBox, letter_combo: QComboBox) -> str:
-        if number_combo.currentIndex() > 0:
-            return number_combo.currentText()
-        if letter_combo.currentIndex() > 0:
-            return letter_combo.currentText()
+    def _selected_border(group: QButtonGroup) -> str:
+        button = group.checkedButton()
+        if button is not None:
+            return str(button.property("border_point"))
         raise ValueError("Sélectionnez un point de bord")
+
+    def _selected_color(self) -> RayColor:
+        button = self.color_group.checkedButton()
+        if button is None:
+            raise ValueError("Sélectionnez une couleur")
+        return RayColor(button.property("ray_color"))
 
     def _show_certainties(self, _index: int | None = None) -> None:
         for row in range(8):
@@ -657,11 +745,12 @@ class MainWindow(QMainWindow):
         black_enabled = self.black_checkbox.isChecked()
         self.absorbed.setEnabled(not force_busy and black_enabled and not cell_mode)
         enabled = not force_busy and not self.absorbed.isChecked() and not cell_mode
-        self.entry_number.setEnabled(not force_busy and not cell_mode)
-        self.entry_letter.setEnabled(not force_busy and not cell_mode)
-        self.exit_number.setEnabled(enabled)
-        self.exit_letter.setEnabled(enabled)
-        self.color.setEnabled(enabled)
+        for button in self.entry_buttons.values():
+            button.setEnabled(not force_busy and not cell_mode)
+        for button in self.exit_buttons.values():
+            button.setEnabled(enabled)
+        for button in self.color_buttons.values():
+            button.setEnabled(enabled)
         self.cell_row.setEnabled(not force_busy and cell_mode)
         self.cell_column.setEnabled(not force_busy and cell_mode)
         self.cell_content.setEnabled(not force_busy and cell_mode)

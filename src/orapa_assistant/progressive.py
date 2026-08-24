@@ -6,11 +6,11 @@ from zlib import crc32
 from .domain_filter import PlacementDomain
 from .pieces import BLACK_BODY, DIAMOND, PIECES, placements
 from .orapa_csp import solve_orapa_csp
-from .relational_filter import apply_relational_filters
+from .relational_filter import RelationalFilterState, apply_relational_filters
 from .search import (
     SearchResult, search_configurations_bounded,
 )
-from .solver import MoveScore, Solver, SolverObservation
+from .solver import MoveScore, Observation, Solver, SolverObservation
 
 
 class ProgressiveSolver:
@@ -22,10 +22,18 @@ class ProgressiveSolver:
         include_diamond: bool = False,
         include_black_body: bool = False,
         exact_search_limit: int = 1_000_000,
+        relation_work_budget: int = 500_000,
+        relation_time_budget: float | None = None,
+        global_csp_domain_limit: int = 450,
+        global_csp_min_observations: int = 15,
     ) -> None:
         self.include_diamond = include_diamond
         self.include_black_body = include_black_body
         self.exact_search_limit = exact_search_limit
+        self.relation_work_budget = relation_work_budget
+        self.relation_time_budget = relation_time_budget
+        self.global_csp_domain_limit = global_csp_domain_limit
+        self.global_csp_min_observations = global_csp_min_observations
         definitions = PIECES
         if include_diamond:
             definitions += (DIAMOND,)
@@ -36,6 +44,7 @@ class ProgressiveSolver:
         )
         self._history: list[SolverObservation] = []
         self._filtered_domains = self._base_domains
+        self._relational_state: RelationalFilterState | None = None
         self._result: SearchResult | None = None
         self._exact_solver: Solver | None = None
         self._strategy_solver: Solver | None = None
@@ -118,8 +127,16 @@ class ProgressiveSolver:
         relational = apply_relational_filters(
             self._base_domains if start_domains is None else start_domains,
             observations,
-            max_relation_combinations=max(2_000_000, self.exact_search_limit),
+            state=self._relational_state if start_domains is not None else None,
+            max_relation_work=self.relation_work_budget,
+            max_relation_seconds=self.relation_time_budget,
+            stop_domain_mass=(
+                self.global_csp_domain_limit
+                if len(observations) >= self.global_csp_min_observations
+                else None
+            ),
         )
+        self._relational_state = relational.state
         self._filtered_domains = relational.domains
         self._applied_relation_count = relational.applied_relations
         self._deferred_relation_count = relational.deferred_relations
@@ -132,7 +149,18 @@ class ProgressiveSolver:
         self._representative_candidates = ()
         self._move_scores = []
         self._strategy_sample_count = 0
-        if observations and self._raw_combination_count <= 150_000_000:
+        domain_mass = sum(
+            len(domain.placements) for domain in self._filtered_domains
+        )
+        should_try_global_csp = observations and (
+            self._raw_combination_count <= 150_000_000
+            or (
+                self._deferred_relation_count > 0
+                and len(observations) >= self.global_csp_min_observations
+                and domain_mass <= self.global_csp_domain_limit
+            )
+        )
+        if should_try_global_csp:
             model_result = solve_orapa_csp(
                 self._filtered_domains,
                 observations,
@@ -148,6 +176,11 @@ class ProgressiveSolver:
             )
             self._representative_candidates = model_result.configurations
             if model_result.exhausted:
+                self._applied_relation_count = sum(
+                    isinstance(observation, Observation)
+                    for observation in observations
+                )
+                self._deferred_relation_count = 0
                 self._result = SearchResult(
                     model_result.configurations,
                     self._raw_combination_count,
@@ -172,6 +205,11 @@ class ProgressiveSolver:
             )
             self._representative_candidates = bounded.configurations
             if bounded.exhausted:
+                self._applied_relation_count = sum(
+                    isinstance(observation, Observation)
+                    for observation in observations
+                )
+                self._deferred_relation_count = 0
                 self._result = SearchResult(
                     bounded.configurations,
                     self._raw_combination_count,
@@ -195,19 +233,23 @@ class ProgressiveSolver:
 
     def add_observations(self, observations: tuple[SolverObservation, ...]) -> None:
         self._history.extend(observations)
+        self._relational_state = None
         self._recompute()
 
     def remove_observation(self, index: int) -> SolverObservation:
         observation = self._history.pop(index)
+        self._relational_state = None
         self._recompute()
         return observation
 
     def replace_observation(self, index: int, observation: SolverObservation) -> None:
         self._history[index] = observation
+        self._relational_state = None
         self._recompute()
 
     def clear(self) -> None:
         self._history.clear()
+        self._relational_state = None
         self._recompute()
 
     def rank_next_moves(self, include_used: bool = False) -> list[MoveScore]:

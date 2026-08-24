@@ -34,11 +34,14 @@ def test_solver_task_saves_and_reset_archives_history(
     store.ensure_current()
     solver = Solver([REAL_GAME_SOLUTION])
     window = MainWindow(solver, history_store=store)
-    window.color.setCurrentIndex(window.color.findData(RayColor.WHITE))
-    clue = Observation("B", "3", window.color.currentData())
+    window.entry_buttons["B"].click()
+    window.exit_buttons["3"].click()
+    window.color_buttons[RayColor.WHITE].click()
+    clue = Observation("B", "3", window._selected_color())
     assert clue.color is RayColor.WHITE
 
-    window._start_solver_task(lambda: solver.add_observation(clue))
+    monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: None)
+    window._add_observation()
     assert window._worker is not None
     assert window._worker.wait(1_000)
     app.processEvents()

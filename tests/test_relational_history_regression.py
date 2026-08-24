@@ -49,8 +49,9 @@ def test_relational_solver_understands_the_sixteen_clue_prefix() -> None:
     solver.add_observations(FIRST_SIXTEEN_CLUES[:12])
 
     assert not solver.exact
-    assert solver.strategy_sample_count > 0
-    assert solver.rank_next_moves()
+    assert solver.deferred_relation_count > 0
+    assert solver.strategy_sample_count == 0
+    assert solver.rank_next_moves() == []
 
     for observation in FIRST_SIXTEEN_CLUES[12:]:
         solver.add_observation(observation)
