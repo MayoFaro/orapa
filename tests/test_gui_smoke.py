@@ -6,13 +6,14 @@ from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QPoint, Qt
 
 from orapa_assistant.border import BOTTOM_POINTS, RIGHT_POINTS
-from orapa_assistant.examples import REAL_GAME_SOLUTION
+from orapa_assistant.examples import REAL_GAME_HISTORY, REAL_GAME_SOLUTION
 from orapa_assistant.gui.main_window import (
     BOARD_COLUMN_WIDTH,
     BOARD_ROW_HEIGHT,
     MainWindow,
 )
 from orapa_assistant.colors import RayColor
+from orapa_assistant.progressive import ProgressiveSolver
 from orapa_assistant.raytracer import Configuration
 from orapa_assistant.solver import CellContent, CellObservation, Observation, Solver
 
@@ -99,6 +100,33 @@ def test_history_displays_newest_observation_first() -> None:
     assert window.history.item(0).data(Qt.UserRole) == 2
     assert window.history.item(1).text().startswith("D → D")
     assert window.history.item(2).text().startswith("B → 3")
+    window.close()
+
+
+def test_frequency_map_view_colours_the_board() -> None:
+    app = QApplication.instance() or QApplication([])
+    solver = ProgressiveSolver()
+    solver.add_observations(REAL_GAME_HISTORY[:3])
+    window = MainWindow(solver)
+
+    index = window.solution_view.findData("frequency")
+    assert index >= 0
+    assert window.solution_view.itemText(index).startswith("Carte de fréquences")
+    assert not window.solution_view.isHidden()
+
+    window.solution_view.setCurrentIndex(index)
+    assert "Carte de fréquences" in window.certainty_label.text()
+    painted = [
+        window.board.item(row, column).text()
+        for row in range(8)
+        for column in range(10)
+        if window.board.item(row, column).text() != "·"
+    ]
+    assert painted
+    assert all(text.isdigit() for text in painted)
+
+    window.solution_view.setCurrentIndex(0)
+    assert "Formes communes" in window.certainty_label.text()
     window.close()
 
 

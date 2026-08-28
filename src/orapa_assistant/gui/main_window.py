@@ -96,6 +96,18 @@ CELL_BACKGROUNDS = {
     "N": GEM_COLORS["black_body"],
 }
 
+
+def _blend_toward_white(color: QColor, weight: float) -> QColor:
+    """Interpole du blanc (poids 0) vers ``color`` (poids 1)."""
+
+    weight = max(0.0, min(1.0, weight))
+    return QColor(
+        round(255 + (color.red() - 255) * weight),
+        round(255 + (color.green() - 255) * weight),
+        round(255 + (color.blue() - 255) * weight),
+    )
+
+
 GEM_LABELS = {
     "white_diamond": "losange blanc",
     "white_triangle": "triangle blanc",
@@ -570,9 +582,16 @@ class MainWindow(QMainWindow):
                     f"Historique — sauvegarde automatique{suffix}"
                 )
 
+        self._refresh_certainty_label()
+        self._refresh_solution_view()
+        self._show_certainties()
+
+    def _refresh_certainty_label(self) -> None:
         certain_gems = tuple(getattr(self.solver, "certain_gems", ()))
         if certain_gems:
-            labels = ", ".join(GEM_LABELS.get(gem.name, gem.name) for gem in certain_gems)
+            labels = ", ".join(
+                GEM_LABELS.get(gem.name, gem.name) for gem in certain_gems
+            )
             self.certainty_label.setText(
                 f"Formes communes aux configurations retenues : {labels}"
             )
@@ -580,25 +599,32 @@ class MainWindow(QMainWindow):
             self.certainty_label.setText(
                 "Formes communes aux configurations retenues : aucune"
             )
-        self._refresh_solution_view()
-        self._show_certainties()
 
     def _refresh_solution_view(self) -> None:
         candidates = tuple(getattr(self.solver, "candidates", ()))
         show_choices = len(candidates) == 2
-        previous = self.solution_view.currentIndex()
+        previous_data = self.solution_view.currentData()
         blocker = QSignalBlocker(self.solution_view)
         self.solution_view.clear()
         self.solution_view.addItem("Certitudes communes", None)
         if show_choices:
             self.solution_view.addItem("Configuration retenue 1", 0)
             self.solution_view.addItem("Configuration retenue 2", 1)
-            self.solution_view.setCurrentIndex(min(previous, 2))
-        else:
-            self.solution_view.setCurrentIndex(0)
+        elif getattr(self.solver, "frequency_available", False):
+            qualifier = (
+                "exacte"
+                if getattr(self.solver, "recommendation_exact", False)
+                else "estimée"
+            )
+            self.solution_view.addItem(
+                f"Carte de fréquences ({qualifier})", "frequency"
+            )
+        restored = self.solution_view.findData(previous_data)
+        self.solution_view.setCurrentIndex(restored if restored >= 0 else 0)
         del blocker
-        self.solution_view_label.setVisible(show_choices)
-        self.solution_view.setVisible(show_choices)
+        has_options = self.solution_view.count() > 1
+        self.solution_view_label.setVisible(has_options)
+        self.solution_view.setVisible(has_options)
 
     @staticmethod
     def _configure_border_pair(
@@ -635,6 +661,10 @@ class MainWindow(QMainWindow):
                 item.setText("·")
                 item.setBackground(QColor("#f3f3f3"))
         selected_candidate = self.solution_view.currentData()
+        if selected_candidate == "frequency":
+            self._render_frequency_map()
+            return
+        self._refresh_certainty_label()
         candidates = tuple(getattr(self.solver, "candidates", ()))
         if selected_candidate is not None and len(candidates) == 2:
             displayed_gems = candidates[selected_candidate].gems
@@ -651,6 +681,35 @@ class MainWindow(QMainWindow):
                 item.setText(code)
                 if code != "·" and "/" not in code:
                     item.setBackground(CELL_BACKGROUNDS[code[0]])
+
+    def _render_frequency_map(self) -> None:
+        frequency_map = getattr(self.solver, "frequency_map", None)
+        if frequency_map is None or frequency_map.sample_size == 0:
+            return
+        if frequency_map.exhaustive:
+            note = "exacte"
+        else:
+            note = f"estimée sur {frequency_map.sample_size} modèle(s)"
+        self.certainty_label.setText(
+            f"Carte de fréquences {note} : % de configurations où une pierre "
+            "occupe la case (teinte = pierre la plus fréquente)"
+        )
+        for row_index in range(8):
+            row_name = "ABCDEFGH"[row_index]
+            for column_index in range(10):
+                probability = frequency_map.occupancy[row_index][column_index]
+                item = self.board.item(row_index, column_index)
+                if probability <= 0.0:
+                    continue
+                dominant = frequency_map.dominant_content(
+                    row_name, column_index + 1
+                )
+                base = GEM_COLORS.get(
+                    dominant.value if dominant is not None else "white",
+                    GEM_COLORS["white"],
+                )
+                item.setText(str(round(probability * 100)))
+                item.setBackground(_blend_toward_white(base, probability))
 
     def _update_result_controls(self, force_busy: bool = False) -> None:
         cell_mode = self.action_type.currentData() == "cell"
