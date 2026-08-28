@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QSignalBlocker, QThread, Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QPointF, QRectF, QSignalBlocker, QThread, Qt, Signal
+from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QComboBox,
     QCheckBox,
@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QStyledItemDelegate,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -89,6 +90,51 @@ def _blend_toward_white(color: QColor, weight: float) -> QColor:
     )
 
 
+# Coins d'un demi‑carré (fractions de la case) : le suffixe nomme l'angle droit.
+_TRIANGLE_CORNERS = {
+    "hg": ((0.0, 0.0), (1.0, 0.0), (0.0, 1.0)),
+    "hd": ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0)),
+    "bg": ((0.0, 0.0), (0.0, 1.0), (1.0, 1.0)),
+    "bd": ((1.0, 0.0), (0.0, 1.0), (1.0, 1.0)),
+}
+
+
+class BoardCellDelegate(QStyledItemDelegate):
+    """Peint les pierres : triangle orienté pour un demi‑carré, carré sinon.
+
+    Les cases vides et la carte de fréquences (texte + fond) gardent le rendu
+    par défaut.
+    """
+
+    def paint(self, painter, option, index) -> None:
+        code = index.data(Qt.DisplayRole)
+        if not code or code == "·" or code[0].isdigit():
+            super().paint(painter, option, index)
+            return
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(QColor("#2b2b2b"), 1))
+        cell = QRectF(option.rect).adjusted(0.5, 0.5, -0.5, -0.5)
+        for part in code.split("/"):
+            painter.setBrush(CELL_BACKGROUNDS.get(part[0], QColor("#8a8a8a")))
+            corners = _TRIANGLE_CORNERS.get(part[1:])
+            if corners is None:
+                painter.drawRect(cell)
+            else:
+                painter.drawPolygon(
+                    QPolygonF(
+                        [
+                            QPointF(
+                                cell.left() + fraction_x * cell.width(),
+                                cell.top() + fraction_y * cell.height(),
+                            )
+                            for fraction_x, fraction_y in corners
+                        ]
+                    )
+                )
+        painter.restore()
+
+
 GEM_LABELS = {
     "white_diamond": "losange blanc",
     "white_triangle": "triangle blanc",
@@ -119,6 +165,7 @@ class MainWindow(QMainWindow):
         self.board.setVerticalHeaderLabels(list("ABCDEFGH"))
         self.board.setEditTriggers(QTableWidget.NoEditTriggers)
         self.board.setSelectionMode(QTableWidget.NoSelection)
+        self.board.setItemDelegate(BoardCellDelegate(self.board))
         self.board.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.board.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         horizontal_header = self.board.horizontalHeader()
@@ -635,11 +682,8 @@ class MainWindow(QMainWindow):
         codes = configuration_cell_codes(configuration)
         for row in range(8):
             for column in range(10):
-                code = codes[row][column]
-                item = self.board.item(row, column)
-                item.setText(code)
-                if code != "·" and "/" not in code:
-                    item.setBackground(CELL_BACKGROUNDS[code[0]])
+                # Le délégué peint la forme (carré ou triangle) d'après ce code.
+                self.board.item(row, column).setText(codes[row][column])
 
     def _render_frequency_map(self) -> None:
         frequency_map = getattr(self.solver, "frequency_map", None)

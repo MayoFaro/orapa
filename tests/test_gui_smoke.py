@@ -129,6 +129,25 @@ def test_frequency_map_view_colours_the_board() -> None:
     window.close()
 
 
+def test_board_paints_gem_codes_without_error() -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(Solver([REAL_GAME_SOLUTION]))
+    window.show()
+    app.processEvents()
+    # La solution de référence mélange carrés pleins et demi-carrés ; le rendu
+    # (délégué) ne doit pas lever.
+    codes = {
+        window.board.item(row, column).text()
+        for row in range(8)
+        for column in range(10)
+    }
+    assert any(code[-2:] in {"hg", "hd", "bg", "bd"} for code in codes if len(code) > 1)
+    assert "B" in codes  # au moins un carré plein (triangle bleu, pointe)
+    pixmap = window.board.grab()
+    assert not pixmap.isNull()
+    window.close()
+
+
 def test_two_remaining_solutions_can_be_displayed_separately() -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(Solver([Configuration(()), REAL_GAME_SOLUTION]))
