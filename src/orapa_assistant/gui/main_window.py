@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QFormLayout,
     QGridLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -23,33 +24,13 @@ from PySide6.QtWidgets import (
     QHeaderView,
 )
 
-from ..border import BOTTOM_POINTS, LEFT_POINTS, RIGHT_POINTS, TOP_POINTS
+from ..border import BOTTOM_POINTS, RIGHT_POINTS
 from ..cell_display import configuration_cell_codes
-from ..colors import RayColor
 from ..history_store import HistoryStore
 from ..raytracer import Configuration
 from ..progressive import ProgressiveSolver
 from ..solver import CellContent, CellObservation, Observation
-
-
-COLOR_LABELS = {
-    RayColor.TRANSPARENT: "Transparent",
-    RayColor.WHITE: "Blanc",
-    RayColor.RED: "Rouge",
-    RayColor.YELLOW: "Jaune",
-    RayColor.BLUE: "Bleu",
-    RayColor.PINK: "Rose",
-    RayColor.LIGHT_YELLOW: "Jaune citron",
-    RayColor.LIGHT_BLUE: "Bleu ciel",
-    RayColor.ORANGE: "Orange",
-    RayColor.GREEN: "Vert",
-    RayColor.VIOLET: "Violet",
-    RayColor.LIGHT_ORANGE: "Orange clair",
-    RayColor.LIGHT_GREEN: "Vert clair",
-    RayColor.LIGHT_VIOLET: "Violet clair",
-    RayColor.BLACK: "Noir",
-    RayColor.GRAY: "Gris",
-}
+from .chips import ObservationChipPanel, RAYCOLOR_LABELS as COLOR_LABELS
 
 CELL_CONTENT_LABELS = {
     CellContent.NOTHING: "Rien",
@@ -246,11 +227,10 @@ class MainWindow(QMainWindow):
         self.diamond_checkbox.toggled.connect(self._change_variants)
         self.black_checkbox.toggled.connect(self._change_variants)
 
-        self.entry_number = QComboBox()
-        self.entry_letter = QComboBox()
-        self.exit_number = QComboBox()
-        self.exit_letter = QComboBox()
-        self.color = QComboBox()
+        self.observation_panel = ObservationChipPanel()
+        self.entry_selector = self.observation_panel.entry
+        self.exit_selector = self.observation_panel.exit
+        self.color_selector = self.observation_panel.color
         self.absorbed = QCheckBox("L’onde a été absorbée")
         self.action_type = QComboBox()
         self.action_type.addItem("Envoyer une onde", "wave")
@@ -260,16 +240,6 @@ class MainWindow(QMainWindow):
         self.cell_column = QComboBox()
         self.cell_column.addItems([str(number) for number in range(1, 11)])
         self.cell_content = QComboBox()
-        number_points = TOP_POINTS + RIGHT_POINTS
-        letter_points = LEFT_POINTS + BOTTOM_POINTS
-        self._configure_border_pair(
-            self.entry_number, self.entry_letter, number_points, letter_points
-        )
-        self._configure_border_pair(
-            self.exit_number, self.exit_letter, number_points, letter_points
-        )
-        for color, label in COLOR_LABELS.items():
-            self.color.addItem(label, color)
         self.absorbed.toggled.connect(lambda: self._update_result_controls())
         self.action_type.currentIndexChanged.connect(
             lambda: self._update_result_controls()
@@ -283,18 +253,31 @@ class MainWindow(QMainWindow):
         self.reset_button = QPushButton("Nouvelle partie")
         self.reset_button.clicked.connect(self._reset_game)
 
-        form = QFormLayout()
-        form.addRow("Action", self.action_type)
-        form.addRow("Entrée — chiffres", self.entry_number)
-        form.addRow("Entrée — lettres", self.entry_letter)
-        form.addRow("Sortie — chiffres", self.exit_number)
-        form.addRow("Sortie — lettres", self.exit_letter)
-        form.addRow("Couleur", self.color)
-        form.addRow(self.absorbed)
-        form.addRow("Case — ligne", self.cell_row)
-        form.addRow("Case — colonne", self.cell_column)
-        form.addRow("Résultat de la case", self.cell_content)
-        form.addRow(self.add_button)
+        cell_form = QFormLayout()
+        cell_form.addRow("Case — ligne", self.cell_row)
+        cell_form.addRow("Case — colonne", self.cell_column)
+        cell_form.addRow("Résultat de la case", self.cell_content)
+        self.cell_container = QWidget()
+        self.cell_container.setLayout(cell_form)
+
+        wave_layout = QVBoxLayout()
+        wave_layout.setContentsMargins(0, 0, 0, 0)
+        wave_layout.addWidget(self.observation_panel)
+        wave_layout.addWidget(self.absorbed)
+        self.wave_container = QWidget()
+        self.wave_container.setLayout(wave_layout)
+
+        observation_layout = QVBoxLayout()
+        action_row = QHBoxLayout()
+        action_row.addWidget(QLabel("Action"))
+        action_row.addWidget(self.action_type)
+        action_row.addStretch(1)
+        observation_layout.addLayout(action_row)
+        observation_layout.addWidget(self.wave_container)
+        observation_layout.addWidget(self.cell_container)
+        observation_layout.addWidget(self.add_button)
+        self.observation_area = QGroupBox("Nouvelle observation")
+        self.observation_area.setLayout(observation_layout)
 
         right = QVBoxLayout()
         right.addWidget(self.diamond_checkbox)
@@ -306,7 +289,6 @@ class MainWindow(QMainWindow):
         solution_view_row.addWidget(self.solution_view_label)
         solution_view_row.addWidget(self.solution_view)
         right.addLayout(solution_view_row)
-        right.addLayout(form)
         self.history_label = QLabel("Historique")
         if self.history_store is not None:
             self.history_label.setToolTip(
@@ -323,8 +305,13 @@ class MainWindow(QMainWindow):
         self.right_panel.setLayout(right)
         self.right_panel.setFixedWidth(320)
 
+        left_column = QVBoxLayout()
+        left_column.addWidget(self.board_panel, 0, Qt.AlignTop | Qt.AlignLeft)
+        left_column.addWidget(self.observation_area)
+        left_column.addStretch(1)
+
         layout = QHBoxLayout()
-        layout.addWidget(self.board_panel, 0, Qt.AlignTop | Qt.AlignLeft)
+        layout.addLayout(left_column)
         layout.addStretch(1)
         layout.addWidget(self.right_panel)
         central = QWidget()
@@ -343,15 +330,17 @@ class MainWindow(QMainWindow):
                     self.cell_content.currentData(),
                 )
             else:
-                entry = self._selected_border(self.entry_number, self.entry_letter)
+                entry = self.entry_selector.value()
+                if entry is None:
+                    raise ValueError("Sélectionnez un point d’entrée")
                 if self.absorbed.isChecked():
                     observation = Observation(entry, absorbed=True)
                 else:
-                    observation = Observation(
-                        entry,
-                        self._selected_border(self.exit_number, self.exit_letter),
-                        self.color.currentData(),
-                    )
+                    exit_point = self.exit_selector.value()
+                    color = self.color_selector.value()
+                    if exit_point is None or color is None:
+                        raise ValueError("Sélectionnez une sortie et une couleur")
+                    observation = Observation(entry, exit_point, color)
         except ValueError as error:
             QMessageBox.warning(self, "Saisie incomplète", str(error))
             return
@@ -383,8 +372,6 @@ class MainWindow(QMainWindow):
             )
 
     def _set_busy(self, busy: bool) -> None:
-        self.entry_number.setEnabled(not busy)
-        self.entry_letter.setEnabled(not busy)
         self.action_type.setEnabled(not busy)
         self.cell_row.setEnabled(not busy)
         self.cell_column.setEnabled(not busy)
@@ -626,34 +613,6 @@ class MainWindow(QMainWindow):
         self.solution_view_label.setVisible(has_options)
         self.solution_view.setVisible(has_options)
 
-    @staticmethod
-    def _configure_border_pair(
-        number_combo: QComboBox,
-        letter_combo: QComboBox,
-        numbers: tuple[str, ...],
-        letters: tuple[str, ...],
-    ) -> None:
-        number_combo.addItem("—")
-        number_combo.addItems(numbers)
-        letter_combo.addItem("—")
-        letter_combo.addItems(letters)
-        number_combo.setCurrentIndex(1)
-        letter_combo.setCurrentIndex(0)
-        number_combo.currentIndexChanged.connect(
-            lambda index: letter_combo.setCurrentIndex(0) if index > 0 else None
-        )
-        letter_combo.currentIndexChanged.connect(
-            lambda index: number_combo.setCurrentIndex(0) if index > 0 else None
-        )
-
-    @staticmethod
-    def _selected_border(number_combo: QComboBox, letter_combo: QComboBox) -> str:
-        if number_combo.currentIndex() > 0:
-            return number_combo.currentText()
-        if letter_combo.currentIndex() > 0:
-            return letter_combo.currentText()
-        raise ValueError("Sélectionnez un point de bord")
-
     def _show_certainties(self, _index: int | None = None) -> None:
         for row in range(8):
             for column in range(10):
@@ -714,13 +673,15 @@ class MainWindow(QMainWindow):
     def _update_result_controls(self, force_busy: bool = False) -> None:
         cell_mode = self.action_type.currentData() == "cell"
         black_enabled = self.black_checkbox.isChecked()
+        self.wave_container.setVisible(not cell_mode)
+        self.cell_container.setVisible(cell_mode)
         self.absorbed.setEnabled(not force_busy and black_enabled and not cell_mode)
-        enabled = not force_busy and not self.absorbed.isChecked() and not cell_mode
-        self.entry_number.setEnabled(not force_busy and not cell_mode)
-        self.entry_letter.setEnabled(not force_busy and not cell_mode)
-        self.exit_number.setEnabled(enabled)
-        self.exit_letter.setEnabled(enabled)
-        self.color.setEnabled(enabled)
+        result_enabled = (
+            not force_busy and not self.absorbed.isChecked() and not cell_mode
+        )
+        self.entry_selector.setEnabled(not force_busy and not cell_mode)
+        self.exit_selector.setEnabled(result_enabled)
+        self.color_selector.setEnabled(result_enabled)
         self.cell_row.setEnabled(not force_busy and cell_mode)
         self.cell_column.setEnabled(not force_busy and cell_mode)
         self.cell_content.setEnabled(not force_busy and cell_mode)

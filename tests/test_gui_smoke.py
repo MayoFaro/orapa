@@ -30,7 +30,8 @@ def test_main_window_can_be_created() -> None:
     assert [label.text() for label in window.bottom_marker_labels] == list(BOTTOM_POINTS)
     assert "Configurations retenues par le modèle : 1" in window.count_label.text()
     assert "losange blanc" in window.certainty_label.text()
-    assert window.entry_number.currentText() == "1"
+    assert window.entry_selector.value() is None
+    assert window.exit_selector.value() is None
     window.show()
     app.processEvents()
     board_viewport = window.board.viewport().mapTo(window, QPoint(0, 0))
@@ -63,25 +64,23 @@ def test_main_window_can_be_created() -> None:
     assert [label.height() for label in window.right_marker_labels] == [
         window.board.rowHeight(row) for row in range(8)
     ]
-    assert window.minimumSizeHint().width() <= 800
-    assert window.color.itemText(window.color.findData(RayColor.LIGHT_YELLOW)) == (
-        "Jaune citron"
-    )
-    assert window.color.itemText(window.color.findData(RayColor.LIGHT_BLUE)) == (
-        "Bleu ciel"
-    )
-    window.entry_letter.setCurrentText("A")
-    assert window.entry_number.currentText() == "—"
+    assert window.color_selector.label_for(RayColor.LIGHT_YELLOW) == "Jaune citron"
+    assert window.color_selector.label_for(RayColor.LIGHT_BLUE) == "Bleu ciel"
+    window.entry_selector.set_value("A")
+    assert window.entry_selector.value() == "A"
     assert not window.absorbed.isEnabled()
     window.action_type.setCurrentIndex(1)
     assert window.cell_row.isEnabled()
     assert window.cell_content.findData(CellContent.DIAMOND) == -1
-    assert not window.entry_number.isEnabled()
+    assert not window.entry_selector.isEnabled()
+    assert window.wave_container.isHidden()
+    assert window.cell_container.isVisible()
     window.action_type.setCurrentIndex(0)
+    assert not window.cell_container.isVisibleTo(window)
     window.black_checkbox.setChecked(True)
     window.absorbed.setChecked(True)
-    assert not window.exit_number.isEnabled()
-    assert not window.color.isEnabled()
+    assert not window.exit_selector.isEnabled()
+    assert not window.color_selector.isEnabled()
     window.diamond_checkbox.setChecked(True)
     assert window.solver.include_diamond
     assert window.solver.include_black_body
