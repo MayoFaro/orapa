@@ -15,7 +15,8 @@ class SpatialRelation(str, Enum):
     OVERLAP = "overlap"
 
 
-def _axes(polygon: Polygon) -> set[tuple[int, int]]:
+@lru_cache(maxsize=100_000)
+def _axes(polygon: Polygon) -> frozenset[tuple[int, int]]:
     axes: set[tuple[int, int]] = set()
     for segment in polygon.segments:
         dx = segment.end.x - segment.start.x
@@ -25,7 +26,7 @@ def _axes(polygon: Polygon) -> set[tuple[int, int]]:
             axis = (-axis[0], -axis[1])
         divisor = max(abs(axis[0]), abs(axis[1]))
         axes.add((axis[0] // divisor, axis[1] // divisor))
-    return axes
+    return frozenset(axes)
 
 
 def _projection(polygon: Polygon, axis: tuple[int, int]) -> tuple[int, int]:

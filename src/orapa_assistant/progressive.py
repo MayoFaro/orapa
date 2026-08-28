@@ -4,6 +4,7 @@ from math import prod
 from zlib import crc32
 
 from .domain_filter import PlacementDomain
+from .frequency import FrequencyMap, build_frequency_map
 from .pieces import BLACK_BODY, DIAMOND, PIECES, placements
 from .orapa_csp import solve_orapa_csp
 from .relational_filter import apply_relational_filters
@@ -44,6 +45,7 @@ class ProgressiveSolver:
         self._strategy_sample_count = 0
         self._applied_relation_count = 0
         self._deferred_relation_count = 0
+        self._frequency_map: FrequencyMap | None = None
         self._raw_combination_count = prod(
             len(domain.placements) for domain in self._base_domains
         )
@@ -75,6 +77,37 @@ class ProgressiveSolver:
     @property
     def recommendation_exact(self) -> bool:
         return self._result is not None
+
+    @property
+    def _frequency_sample(self) -> tuple:
+        return (
+            self._result.configurations
+            if self._result is not None
+            else self._representative_candidates
+        )
+
+    @property
+    def frequency_available(self) -> bool:
+        """Vrai si des modèles globaux permettent une carte de fréquences."""
+
+        return bool(self._frequency_sample)
+
+    @property
+    def frequency_map(self) -> FrequencyMap | None:
+        """Carte d'occupation des cases sur les modèles globaux disponibles.
+
+        Exacte quand l'énumération est exhaustive, sinon estimée sur
+        l'échantillon de modèles vérifiés. Construite à la demande.
+        """
+
+        configurations = self._frequency_sample
+        if not configurations:
+            return None
+        if self._frequency_map is None:
+            self._frequency_map = build_frequency_map(
+                configurations, exhaustive=self._result is not None
+            )
+        return self._frequency_map
 
     @property
     def certain_gems(self):
@@ -132,6 +165,7 @@ class ProgressiveSolver:
         self._representative_candidates = ()
         self._move_scores = []
         self._strategy_sample_count = 0
+        self._frequency_map = None
         if observations and self._raw_combination_count <= 150_000_000:
             model_result = solve_orapa_csp(
                 self._filtered_domains,

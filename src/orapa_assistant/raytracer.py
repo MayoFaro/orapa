@@ -24,6 +24,13 @@ class Gem:
     name: str = ""
     absorbs: bool = False
 
+    def __hash__(self) -> int:
+        cached = getattr(self, "_hash", None)
+        if cached is None:
+            cached = hash((self.color, self.polygon, self.name, self.absorbs))
+            object.__setattr__(self, "_hash", cached)
+        return cached
+
 
 @dataclass(frozen=True)
 class Configuration:

@@ -34,8 +34,8 @@ def test_solver_task_saves_and_reset_archives_history(
     store.ensure_current()
     solver = Solver([REAL_GAME_SOLUTION])
     window = MainWindow(solver, history_store=store)
-    window.color.setCurrentIndex(window.color.findData(RayColor.WHITE))
-    clue = Observation("B", "3", window.color.currentData())
+    window.color_selector.set_value(RayColor.WHITE)
+    clue = Observation("B", "3", window.color_selector.value())
     assert clue.color is RayColor.WHITE
 
     window._start_solver_task(lambda: solver.add_observation(clue))

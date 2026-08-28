@@ -10,6 +10,13 @@ class Point:
     x: int
     y: int
 
+    def __hash__(self) -> int:
+        cached = getattr(self, "_hash", None)
+        if cached is None:
+            cached = hash((self.x, self.y))
+            object.__setattr__(self, "_hash", cached)
+        return cached
+
 
 @dataclass(frozen=True)
 class Segment:
@@ -23,16 +30,17 @@ class Segment:
             raise ValueError("Une surface doit être horizontale, verticale ou à 45°")
         if dx == 0 and dy == 0:
             raise ValueError("Un segment ne peut pas être vide")
+        if dx == 0:
+            slope = "vertical"
+        elif dy == 0:
+            slope = "horizontal"
+        else:
+            slope = "backslash" if dx * dy > 0 else "slash"
+        object.__setattr__(self, "_slope", slope)
 
     @property
     def slope(self) -> str:
-        dx = self.end.x - self.start.x
-        dy = self.end.y - self.start.y
-        if dx == 0:
-            return "vertical"
-        if dy == 0:
-            return "horizontal"
-        return "backslash" if dx * dy > 0 else "slash"
+        return self._slope
 
 
 @dataclass(frozen=True)
@@ -42,15 +50,23 @@ class Polygon:
     def __post_init__(self) -> None:
         if len(self.vertices) < 3:
             raise ValueError("Un polygone doit avoir au moins trois sommets")
-        for segment in self.segments:
-            segment.__post_init__()
-
-    @property
-    def segments(self) -> tuple[Segment, ...]:
-        return tuple(
+        # La construction de chaque Segment valide déjà son inclinaison.
+        segments = tuple(
             Segment(self.vertices[index], self.vertices[(index + 1) % len(self.vertices)])
             for index in range(len(self.vertices))
         )
+        object.__setattr__(self, "_segments", segments)
+
+    def __hash__(self) -> int:
+        cached = getattr(self, "_hash", None)
+        if cached is None:
+            cached = hash(self.vertices)
+            object.__setattr__(self, "_hash", cached)
+        return cached
+
+    @property
+    def segments(self) -> tuple[Segment, ...]:
+        return self._segments
 
 
 def doubled_polygon(*vertices: tuple[int, int]) -> Polygon:

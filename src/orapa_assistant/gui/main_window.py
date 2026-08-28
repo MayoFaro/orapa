@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QSignalBlocker, QThread, Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QPointF, QRectF, QSignalBlocker, QThread, Qt, Signal
+from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QComboBox,
     QCheckBox,
     QFormLayout,
     QGridLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QStyledItemDelegate,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -23,33 +25,13 @@ from PySide6.QtWidgets import (
     QHeaderView,
 )
 
-from ..border import BOTTOM_POINTS, LEFT_POINTS, RIGHT_POINTS, TOP_POINTS
+from ..border import BOTTOM_POINTS, RIGHT_POINTS
 from ..cell_display import configuration_cell_codes
-from ..colors import RayColor
 from ..history_store import HistoryStore
 from ..raytracer import Configuration
 from ..progressive import ProgressiveSolver
 from ..solver import CellContent, CellObservation, Observation
-
-
-COLOR_LABELS = {
-    RayColor.TRANSPARENT: "Transparent",
-    RayColor.WHITE: "Blanc",
-    RayColor.RED: "Rouge",
-    RayColor.YELLOW: "Jaune",
-    RayColor.BLUE: "Bleu",
-    RayColor.PINK: "Rose",
-    RayColor.LIGHT_YELLOW: "Jaune citron",
-    RayColor.LIGHT_BLUE: "Bleu ciel",
-    RayColor.ORANGE: "Orange",
-    RayColor.GREEN: "Vert",
-    RayColor.VIOLET: "Violet",
-    RayColor.LIGHT_ORANGE: "Orange clair",
-    RayColor.LIGHT_GREEN: "Vert clair",
-    RayColor.LIGHT_VIOLET: "Violet clair",
-    RayColor.BLACK: "Noir",
-    RayColor.GRAY: "Gris",
-}
+from .chips import ObservationChipPanel, RAYCOLOR_LABELS as COLOR_LABELS
 
 CELL_CONTENT_LABELS = {
     CellContent.NOTHING: "Rien",
@@ -96,6 +78,63 @@ CELL_BACKGROUNDS = {
     "N": GEM_COLORS["black_body"],
 }
 
+
+def _blend_toward_white(color: QColor, weight: float) -> QColor:
+    """Interpole du blanc (poids 0) vers ``color`` (poids 1)."""
+
+    weight = max(0.0, min(1.0, weight))
+    return QColor(
+        round(255 + (color.red() - 255) * weight),
+        round(255 + (color.green() - 255) * weight),
+        round(255 + (color.blue() - 255) * weight),
+    )
+
+
+# Coins d'un demi‑carré (fractions de la case) : le suffixe nomme l'angle droit.
+_TRIANGLE_CORNERS = {
+    "hg": ((0.0, 0.0), (1.0, 0.0), (0.0, 1.0)),
+    "hd": ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0)),
+    "bg": ((0.0, 0.0), (0.0, 1.0), (1.0, 1.0)),
+    "bd": ((1.0, 0.0), (0.0, 1.0), (1.0, 1.0)),
+}
+
+
+class BoardCellDelegate(QStyledItemDelegate):
+    """Peint les pierres : triangle orienté pour un demi‑carré, carré sinon.
+
+    Les cases vides et la carte de fréquences (texte + fond) gardent le rendu
+    par défaut.
+    """
+
+    def paint(self, painter, option, index) -> None:
+        code = index.data(Qt.DisplayRole)
+        if not code or code == "·" or code[0].isdigit():
+            super().paint(painter, option, index)
+            return
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(QColor("#2b2b2b"), 1))
+        cell = QRectF(option.rect).adjusted(0.5, 0.5, -0.5, -0.5)
+        for part in code.split("/"):
+            painter.setBrush(CELL_BACKGROUNDS.get(part[0], QColor("#8a8a8a")))
+            corners = _TRIANGLE_CORNERS.get(part[1:])
+            if corners is None:
+                painter.drawRect(cell)
+            else:
+                painter.drawPolygon(
+                    QPolygonF(
+                        [
+                            QPointF(
+                                cell.left() + fraction_x * cell.width(),
+                                cell.top() + fraction_y * cell.height(),
+                            )
+                            for fraction_x, fraction_y in corners
+                        ]
+                    )
+                )
+        painter.restore()
+
+
 GEM_LABELS = {
     "white_diamond": "losange blanc",
     "white_triangle": "triangle blanc",
@@ -126,6 +165,7 @@ class MainWindow(QMainWindow):
         self.board.setVerticalHeaderLabels(list("ABCDEFGH"))
         self.board.setEditTriggers(QTableWidget.NoEditTriggers)
         self.board.setSelectionMode(QTableWidget.NoSelection)
+        self.board.setItemDelegate(BoardCellDelegate(self.board))
         self.board.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.board.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         horizontal_header = self.board.horizontalHeader()
@@ -234,11 +274,10 @@ class MainWindow(QMainWindow):
         self.diamond_checkbox.toggled.connect(self._change_variants)
         self.black_checkbox.toggled.connect(self._change_variants)
 
-        self.entry_number = QComboBox()
-        self.entry_letter = QComboBox()
-        self.exit_number = QComboBox()
-        self.exit_letter = QComboBox()
-        self.color = QComboBox()
+        self.observation_panel = ObservationChipPanel()
+        self.entry_selector = self.observation_panel.entry
+        self.exit_selector = self.observation_panel.exit
+        self.color_selector = self.observation_panel.color
         self.absorbed = QCheckBox("L’onde a été absorbée")
         self.action_type = QComboBox()
         self.action_type.addItem("Envoyer une onde", "wave")
@@ -248,16 +287,6 @@ class MainWindow(QMainWindow):
         self.cell_column = QComboBox()
         self.cell_column.addItems([str(number) for number in range(1, 11)])
         self.cell_content = QComboBox()
-        number_points = TOP_POINTS + RIGHT_POINTS
-        letter_points = LEFT_POINTS + BOTTOM_POINTS
-        self._configure_border_pair(
-            self.entry_number, self.entry_letter, number_points, letter_points
-        )
-        self._configure_border_pair(
-            self.exit_number, self.exit_letter, number_points, letter_points
-        )
-        for color, label in COLOR_LABELS.items():
-            self.color.addItem(label, color)
         self.absorbed.toggled.connect(lambda: self._update_result_controls())
         self.action_type.currentIndexChanged.connect(
             lambda: self._update_result_controls()
@@ -271,18 +300,31 @@ class MainWindow(QMainWindow):
         self.reset_button = QPushButton("Nouvelle partie")
         self.reset_button.clicked.connect(self._reset_game)
 
-        form = QFormLayout()
-        form.addRow("Action", self.action_type)
-        form.addRow("Entrée — chiffres", self.entry_number)
-        form.addRow("Entrée — lettres", self.entry_letter)
-        form.addRow("Sortie — chiffres", self.exit_number)
-        form.addRow("Sortie — lettres", self.exit_letter)
-        form.addRow("Couleur", self.color)
-        form.addRow(self.absorbed)
-        form.addRow("Case — ligne", self.cell_row)
-        form.addRow("Case — colonne", self.cell_column)
-        form.addRow("Résultat de la case", self.cell_content)
-        form.addRow(self.add_button)
+        cell_form = QFormLayout()
+        cell_form.addRow("Case — ligne", self.cell_row)
+        cell_form.addRow("Case — colonne", self.cell_column)
+        cell_form.addRow("Résultat de la case", self.cell_content)
+        self.cell_container = QWidget()
+        self.cell_container.setLayout(cell_form)
+
+        wave_layout = QVBoxLayout()
+        wave_layout.setContentsMargins(0, 0, 0, 0)
+        wave_layout.addWidget(self.observation_panel)
+        wave_layout.addWidget(self.absorbed)
+        self.wave_container = QWidget()
+        self.wave_container.setLayout(wave_layout)
+
+        observation_layout = QVBoxLayout()
+        action_row = QHBoxLayout()
+        action_row.addWidget(QLabel("Action"))
+        action_row.addWidget(self.action_type)
+        action_row.addStretch(1)
+        observation_layout.addLayout(action_row)
+        observation_layout.addWidget(self.wave_container)
+        observation_layout.addWidget(self.cell_container)
+        observation_layout.addWidget(self.add_button)
+        self.observation_area = QGroupBox("Nouvelle observation")
+        self.observation_area.setLayout(observation_layout)
 
         right = QVBoxLayout()
         right.addWidget(self.diamond_checkbox)
@@ -294,7 +336,6 @@ class MainWindow(QMainWindow):
         solution_view_row.addWidget(self.solution_view_label)
         solution_view_row.addWidget(self.solution_view)
         right.addLayout(solution_view_row)
-        right.addLayout(form)
         self.history_label = QLabel("Historique")
         if self.history_store is not None:
             self.history_label.setToolTip(
@@ -311,8 +352,13 @@ class MainWindow(QMainWindow):
         self.right_panel.setLayout(right)
         self.right_panel.setFixedWidth(320)
 
+        left_column = QVBoxLayout()
+        left_column.addWidget(self.board_panel, 0, Qt.AlignTop | Qt.AlignLeft)
+        left_column.addWidget(self.observation_area)
+        left_column.addStretch(1)
+
         layout = QHBoxLayout()
-        layout.addWidget(self.board_panel, 0, Qt.AlignTop | Qt.AlignLeft)
+        layout.addLayout(left_column)
         layout.addStretch(1)
         layout.addWidget(self.right_panel)
         central = QWidget()
@@ -331,15 +377,17 @@ class MainWindow(QMainWindow):
                     self.cell_content.currentData(),
                 )
             else:
-                entry = self._selected_border(self.entry_number, self.entry_letter)
+                entry = self.entry_selector.value()
+                if entry is None:
+                    raise ValueError("Sélectionnez un point d’entrée")
                 if self.absorbed.isChecked():
                     observation = Observation(entry, absorbed=True)
                 else:
-                    observation = Observation(
-                        entry,
-                        self._selected_border(self.exit_number, self.exit_letter),
-                        self.color.currentData(),
-                    )
+                    exit_point = self.exit_selector.value()
+                    color = self.color_selector.value()
+                    if exit_point is None or color is None:
+                        raise ValueError("Sélectionnez une sortie et une couleur")
+                    observation = Observation(entry, exit_point, color)
         except ValueError as error:
             QMessageBox.warning(self, "Saisie incomplète", str(error))
             return
@@ -371,8 +419,6 @@ class MainWindow(QMainWindow):
             )
 
     def _set_busy(self, busy: bool) -> None:
-        self.entry_number.setEnabled(not busy)
-        self.entry_letter.setEnabled(not busy)
         self.action_type.setEnabled(not busy)
         self.cell_row.setEnabled(not busy)
         self.cell_column.setEnabled(not busy)
@@ -570,9 +616,16 @@ class MainWindow(QMainWindow):
                     f"Historique — sauvegarde automatique{suffix}"
                 )
 
+        self._refresh_certainty_label()
+        self._refresh_solution_view()
+        self._show_certainties()
+
+    def _refresh_certainty_label(self) -> None:
         certain_gems = tuple(getattr(self.solver, "certain_gems", ()))
         if certain_gems:
-            labels = ", ".join(GEM_LABELS.get(gem.name, gem.name) for gem in certain_gems)
+            labels = ", ".join(
+                GEM_LABELS.get(gem.name, gem.name) for gem in certain_gems
+            )
             self.certainty_label.setText(
                 f"Formes communes aux configurations retenues : {labels}"
             )
@@ -580,53 +633,32 @@ class MainWindow(QMainWindow):
             self.certainty_label.setText(
                 "Formes communes aux configurations retenues : aucune"
             )
-        self._refresh_solution_view()
-        self._show_certainties()
 
     def _refresh_solution_view(self) -> None:
         candidates = tuple(getattr(self.solver, "candidates", ()))
         show_choices = len(candidates) == 2
-        previous = self.solution_view.currentIndex()
+        previous_data = self.solution_view.currentData()
         blocker = QSignalBlocker(self.solution_view)
         self.solution_view.clear()
         self.solution_view.addItem("Certitudes communes", None)
         if show_choices:
             self.solution_view.addItem("Configuration retenue 1", 0)
             self.solution_view.addItem("Configuration retenue 2", 1)
-            self.solution_view.setCurrentIndex(min(previous, 2))
-        else:
-            self.solution_view.setCurrentIndex(0)
+        elif getattr(self.solver, "frequency_available", False):
+            qualifier = (
+                "exacte"
+                if getattr(self.solver, "recommendation_exact", False)
+                else "estimée"
+            )
+            self.solution_view.addItem(
+                f"Carte de fréquences ({qualifier})", "frequency"
+            )
+        restored = self.solution_view.findData(previous_data)
+        self.solution_view.setCurrentIndex(restored if restored >= 0 else 0)
         del blocker
-        self.solution_view_label.setVisible(show_choices)
-        self.solution_view.setVisible(show_choices)
-
-    @staticmethod
-    def _configure_border_pair(
-        number_combo: QComboBox,
-        letter_combo: QComboBox,
-        numbers: tuple[str, ...],
-        letters: tuple[str, ...],
-    ) -> None:
-        number_combo.addItem("—")
-        number_combo.addItems(numbers)
-        letter_combo.addItem("—")
-        letter_combo.addItems(letters)
-        number_combo.setCurrentIndex(1)
-        letter_combo.setCurrentIndex(0)
-        number_combo.currentIndexChanged.connect(
-            lambda index: letter_combo.setCurrentIndex(0) if index > 0 else None
-        )
-        letter_combo.currentIndexChanged.connect(
-            lambda index: number_combo.setCurrentIndex(0) if index > 0 else None
-        )
-
-    @staticmethod
-    def _selected_border(number_combo: QComboBox, letter_combo: QComboBox) -> str:
-        if number_combo.currentIndex() > 0:
-            return number_combo.currentText()
-        if letter_combo.currentIndex() > 0:
-            return letter_combo.currentText()
-        raise ValueError("Sélectionnez un point de bord")
+        has_options = self.solution_view.count() > 1
+        self.solution_view_label.setVisible(has_options)
+        self.solution_view.setVisible(has_options)
 
     def _show_certainties(self, _index: int | None = None) -> None:
         for row in range(8):
@@ -635,6 +667,10 @@ class MainWindow(QMainWindow):
                 item.setText("·")
                 item.setBackground(QColor("#f3f3f3"))
         selected_candidate = self.solution_view.currentData()
+        if selected_candidate == "frequency":
+            self._render_frequency_map()
+            return
+        self._refresh_certainty_label()
         candidates = tuple(getattr(self.solver, "candidates", ()))
         if selected_candidate is not None and len(candidates) == 2:
             displayed_gems = candidates[selected_candidate].gems
@@ -646,22 +682,50 @@ class MainWindow(QMainWindow):
         codes = configuration_cell_codes(configuration)
         for row in range(8):
             for column in range(10):
-                code = codes[row][column]
-                item = self.board.item(row, column)
-                item.setText(code)
-                if code != "·" and "/" not in code:
-                    item.setBackground(CELL_BACKGROUNDS[code[0]])
+                # Le délégué peint la forme (carré ou triangle) d'après ce code.
+                self.board.item(row, column).setText(codes[row][column])
+
+    def _render_frequency_map(self) -> None:
+        frequency_map = getattr(self.solver, "frequency_map", None)
+        if frequency_map is None or frequency_map.sample_size == 0:
+            return
+        if frequency_map.exhaustive:
+            note = "exacte"
+        else:
+            note = f"estimée sur {frequency_map.sample_size} modèle(s)"
+        self.certainty_label.setText(
+            f"Carte de fréquences {note} : % de configurations où une pierre "
+            "occupe la case (teinte = pierre la plus fréquente)"
+        )
+        for row_index in range(8):
+            row_name = "ABCDEFGH"[row_index]
+            for column_index in range(10):
+                probability = frequency_map.occupancy[row_index][column_index]
+                item = self.board.item(row_index, column_index)
+                if probability <= 0.0:
+                    continue
+                dominant = frequency_map.dominant_content(
+                    row_name, column_index + 1
+                )
+                base = GEM_COLORS.get(
+                    dominant.value if dominant is not None else "white",
+                    GEM_COLORS["white"],
+                )
+                item.setText(str(round(probability * 100)))
+                item.setBackground(_blend_toward_white(base, probability))
 
     def _update_result_controls(self, force_busy: bool = False) -> None:
         cell_mode = self.action_type.currentData() == "cell"
         black_enabled = self.black_checkbox.isChecked()
+        self.wave_container.setVisible(not cell_mode)
+        self.cell_container.setVisible(cell_mode)
         self.absorbed.setEnabled(not force_busy and black_enabled and not cell_mode)
-        enabled = not force_busy and not self.absorbed.isChecked() and not cell_mode
-        self.entry_number.setEnabled(not force_busy and not cell_mode)
-        self.entry_letter.setEnabled(not force_busy and not cell_mode)
-        self.exit_number.setEnabled(enabled)
-        self.exit_letter.setEnabled(enabled)
-        self.color.setEnabled(enabled)
+        result_enabled = (
+            not force_busy and not self.absorbed.isChecked() and not cell_mode
+        )
+        self.entry_selector.setEnabled(not force_busy and not cell_mode)
+        self.exit_selector.setEnabled(result_enabled)
+        self.color_selector.setEnabled(result_enabled)
         self.cell_row.setEnabled(not force_busy and cell_mode)
         self.cell_column.setEnabled(not force_busy and cell_mode)
         self.cell_content.setEnabled(not force_busy and cell_mode)
