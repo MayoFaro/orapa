@@ -155,6 +155,23 @@ class PlacementCatalog:
             value for index, value in enumerate(values) if mask & (1 << index)
         )
 
+    def masks_from_index_domains(
+        self, domains: Mapping[str, Iterable[int]]
+    ) -> tuple[int, ...]:
+        """Variante rapide : les domaines contiennent déjà des indices de valeur.
+
+        Aucun hachage de ``Gem`` n'a lieu, ce qui rend l'appel négligeable
+        même lorsqu'il est répété à chaque révision d'arc du CSP.
+        """
+
+        masks: list[int] = []
+        for name in self.names:
+            mask = 0
+            for value_index in domains[name]:
+                mask |= 1 << value_index
+            masks.append(mask)
+        return tuple(masks)
+
     def masks_from_domains(
         self,
         domains: Mapping[str, Iterable[Gem]] | None = None,
