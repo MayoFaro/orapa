@@ -172,6 +172,28 @@ class PlacementCatalog:
             masks.append(mask)
         return tuple(masks)
 
+    def masks_from_known_gems(
+        self, domains: Mapping[str, Iterable[Gem]]
+    ) -> tuple[int, ...]:
+        """Comme :meth:`masks_from_domains`, mais tolérante aux inconnues.
+
+        Un placement absent de ce catalogue est simplement ignoré plutôt que
+        de lever une erreur. Sert à rejouer un témoin mis en cache d'un appel
+        à l'autre : certains de ses placements peuvent avoir disparu d'un
+        domaine entretemps réduit, sans invalider le reste du témoin.
+        """
+
+        masks: list[int] = []
+        for piece_index, name in enumerate(self.names):
+            mask = 0
+            indices = self._value_indices[piece_index]
+            for gem in domains.get(name, ()):
+                value_index = indices.get(gem)
+                if value_index is not None:
+                    mask |= 1 << value_index
+            masks.append(mask)
+        return tuple(masks)
+
     def masks_from_domains(
         self,
         domains: Mapping[str, Iterable[Gem]] | None = None,

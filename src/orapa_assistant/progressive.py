@@ -1,13 +1,13 @@
 from __future__ import annotations
 
+import time
 from math import prod
 from zlib import crc32
 
 from .domain_filter import PlacementDomain
 from .frequency import FrequencyMap, build_frequency_map
 from .pieces import BLACK_BODY, DIAMOND, PIECES, placements
-from .orapa_csp import solve_orapa_csp
-from .relational_filter import apply_relational_filters
+from .orapa_csp import propagate_orapa_csp, solve_orapa_csp
 from .search import (
     SearchResult, search_configurations_bounded,
 )
@@ -22,11 +22,15 @@ class ProgressiveSolver:
         *,
         include_diamond: bool = False,
         include_black_body: bool = False,
-        exact_search_limit: int = 1_000_000,
+        exact_search_min_observations: int = 6,
+        exact_time_budget: float = 45.0,
+        propagate_time_budget: float = 10.0,
     ) -> None:
         self.include_diamond = include_diamond
         self.include_black_body = include_black_body
-        self.exact_search_limit = exact_search_limit
+        self.exact_search_min_observations = exact_search_min_observations
+        self.exact_time_budget = exact_time_budget
+        self.propagate_time_budget = propagate_time_budget
         definitions = PIECES
         if include_diamond:
             definitions += (DIAMOND,)
@@ -46,6 +50,7 @@ class ProgressiveSolver:
         self._applied_relation_count = 0
         self._deferred_relation_count = 0
         self._frequency_map: FrequencyMap | None = None
+        self._witness_cache: dict = {}
         self._raw_combination_count = prod(
             len(domain.placements) for domain in self._base_domains
         )
@@ -148,17 +153,7 @@ class ProgressiveSolver:
         self, start_domains: tuple[PlacementDomain, ...] | None = None
     ) -> None:
         observations = tuple(self._history)
-        relational = apply_relational_filters(
-            self._base_domains if start_domains is None else start_domains,
-            observations,
-            max_relation_combinations=max(2_000_000, self.exact_search_limit),
-        )
-        self._filtered_domains = relational.domains
-        self._applied_relation_count = relational.applied_relations
-        self._deferred_relation_count = relational.deferred_relations
-        self._raw_combination_count = prod(
-            len(domain.placements) for domain in self._filtered_domains
-        )
+        domains = self._base_domains if start_domains is None else start_domains
         self._result = None
         self._exact_solver = None
         self._strategy_solver = None
@@ -166,61 +161,100 @@ class ProgressiveSolver:
         self._move_scores = []
         self._strategy_sample_count = 0
         self._frequency_map = None
-        if observations and self._raw_combination_count <= 150_000_000:
+        if not observations:
+            self._filtered_domains = domains
+            self._applied_relation_count = 0
+            self._deferred_relation_count = 0
+            self._raw_combination_count = prod(
+                len(domain.placements) for domain in domains
+            )
+            return
+
+        propagate_deadline = time.monotonic() + self.propagate_time_budget
+        self._filtered_domains, applied, deferred = propagate_orapa_csp(
+            domains,
+            observations,
+            witness_node_limit=2_000,
+            seed=crc32(repr(observations).encode("utf-8")),
+            deadline=propagate_deadline,
+            witness_cache=self._witness_cache,
+        )
+        self._applied_relation_count = applied
+        self._deferred_relation_count = deferred
+        self._raw_combination_count = prod(
+            len(domain.placements) for domain in self._filtered_domains
+        )
+        if len(observations) >= self.exact_search_min_observations:
+            deadline = time.monotonic() + self.exact_time_budget
             model_result = solve_orapa_csp(
                 self._filtered_domains,
                 observations,
                 model_limit=65,
-                witness_node_limit=(
-                    1_000 if self._raw_combination_count > 5_000_000 else 20_000
-                ),
+                witness_node_limit=20_000,
                 seed=crc32(repr(observations).encode("utf-8")),
+                deadline=deadline,
+                witness_cache=self._witness_cache,
             )
             self._filtered_domains = model_result.domains
             self._raw_combination_count = prod(
                 len(domain.placements) for domain in self._filtered_domains
             )
-            self._representative_candidates = model_result.configurations
-            if model_result.exhausted:
-                self._result = SearchResult(
-                    model_result.configurations,
-                    self._raw_combination_count,
-                    model_result.visited_nodes,
+            configurations = model_result.configurations
+            exhausted = model_result.exhausted
+            legal_count = model_result.visited_nodes
+            if not configurations and not exhausted:
+                # L'échéance a expiré sans preuve exhaustive, mais la
+                # propagation a souvent déjà beaucoup réduit les domaines :
+                # un tirage aléatoire y trouve parfois des témoins que la
+                # recherche exacte n'a pas eu le temps de démontrer complets.
+                bounded = search_configurations_bounded(
+                    self._filtered_domains,
+                    observations,
+                    max_nodes=2_000,
+                    seed=crc32(repr(observations).encode("utf-8")),
                 )
-                self._exact_solver = Solver(model_result.configurations)
-                for observation in observations:
-                    self._exact_solver.add_observation(observation)
-                self._move_scores = self._exact_solver.rank_next_moves()
-            elif model_result.configurations:
-                self._strategy_solver = Solver(model_result.configurations)
-                for observation in observations:
-                    self._strategy_solver.add_observation(observation)
-                self._strategy_sample_count = len(model_result.configurations)
-                self._move_scores = self._strategy_solver.rank_next_moves()
-        elif observations:
+                configurations = bounded.configurations
+                exhausted = bounded.exhausted
+                legal_count = bounded.legal_configuration_count
+            self._apply_search_outcome(
+                configurations, exhausted, legal_count, observations
+            )
+        else:
             bounded = search_configurations_bounded(
                 self._filtered_domains,
                 observations,
                 max_nodes=500,
                 seed=crc32(repr(observations).encode("utf-8")),
             )
-            self._representative_candidates = bounded.configurations
-            if bounded.exhausted:
-                self._result = SearchResult(
-                    bounded.configurations,
-                    self._raw_combination_count,
-                    bounded.legal_configuration_count,
-                )
-                self._exact_solver = Solver(bounded.configurations)
-                for observation in observations:
-                    self._exact_solver.add_observation(observation)
-                self._move_scores = self._exact_solver.rank_next_moves()
-            elif bounded.configurations:
-                self._strategy_solver = Solver(bounded.configurations)
-                for observation in observations:
-                    self._strategy_solver.add_observation(observation)
-                self._strategy_sample_count = len(bounded.configurations)
-                self._move_scores = self._strategy_solver.rank_next_moves()
+            self._apply_search_outcome(
+                bounded.configurations,
+                bounded.exhausted,
+                bounded.legal_configuration_count,
+                observations,
+            )
+
+    def _apply_search_outcome(
+        self,
+        configurations,
+        exhausted: bool,
+        legal_count: int,
+        observations: tuple[SolverObservation, ...],
+    ) -> None:
+        self._representative_candidates = configurations
+        if exhausted:
+            self._result = SearchResult(
+                configurations, self._raw_combination_count, legal_count
+            )
+            self._exact_solver = Solver(configurations)
+            for observation in observations:
+                self._exact_solver.add_observation(observation)
+            self._move_scores = self._exact_solver.rank_next_moves()
+        elif configurations:
+            self._strategy_solver = Solver(configurations)
+            for observation in observations:
+                self._strategy_solver.add_observation(observation)
+            self._strategy_sample_count = len(configurations)
+            self._move_scores = self._strategy_solver.rank_next_moves()
 
     def add_observation(self, observation: SolverObservation) -> None:
         previous_domains = self._filtered_domains

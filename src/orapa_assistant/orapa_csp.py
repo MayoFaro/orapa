@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from random import Random
-from typing import Mapping
+from typing import Callable, Mapping
 
 from .constraints import gems_are_compatible
 from .domain_filter import PlacementDomain
@@ -19,9 +20,12 @@ from .search import configuration_matches
 from .solver import (
     CellContent,
     CellObservation,
+    Observation,
     SolverObservation,
     gem_occupies_cell,
 )
+
+WitnessCache = dict[Observation, list[Mapping[str, tuple[Gem, ...]]]]
 
 
 @dataclass(frozen=True)
@@ -140,10 +144,12 @@ class _RaySupportOracle:
         catalog: PlacementCatalog,
         *,
         max_nodes: int,
+        cancelled: Callable[[], bool] | None = None,
     ) -> None:
         self.finder = finder
         self.catalog = catalog
         self.max_nodes = max_nodes
+        self.cancelled = cancelled
         self.witnesses: list[RayWitness] = []
         self.unknown = False
 
@@ -170,7 +176,9 @@ class _RaySupportOracle:
         search_masks = list(domain_masks)
         search_masks[piece_index] = domain_masks[piece_index] & value_bit
         result = self.finder.search_masks(
-            tuple(search_masks), max_nodes=self.max_nodes
+            tuple(search_masks),
+            max_nodes=self.max_nodes,
+            cancelled=self.cancelled,
         )
         if result.status == WitnessSearchStatus.FOUND:
             assert result.witness is not None
@@ -261,22 +269,22 @@ def _add_cell_constraint(
         )
 
 
-def solve_orapa_csp(
+@dataclass
+class _BuiltProblem:
+    problem: RelationalCSP[str, int]
+    catalog: PlacementCatalog
+    ray_oracles: list[tuple[Observation, "_RaySupportOracle"]]
+
+
+def _build_problem(
     domains: tuple[PlacementDomain, ...],
     observations: tuple[SolverObservation, ...],
     *,
-    model_limit: int = 257,
-    witness_node_limit: int = 20_000,
-    seed: int = 0,
-) -> OrapaModelResult:
-    """Résout les domaines avec des contraintes globales de rayon paresseuses.
-
-    Le CSP travaille sur des indices de placement entiers ; les ``Gem`` ne sont
-    reconstruits qu'aux frontières (résultat et vérification finale).
-    """
-
-    if any(not domain.placements for domain in domains):
-        return OrapaModelResult(domains, (), True, False, 0)
+    witness_node_limit: int,
+    seed: int,
+    cancelled: Callable[[], bool] | None,
+    witness_cache: WitnessCache | None,
+) -> _BuiltProblem:
     random = Random(seed)
     shuffled_domains = {}
     for domain in domains:
@@ -286,10 +294,6 @@ def solve_orapa_csp(
     catalog = PlacementCatalog(shuffled_domains)
     hit_index = LocalHitIndex(catalog)
 
-    def gems_for(name: str, indices) -> tuple[Gem, ...]:
-        placements = catalog.placements[catalog.piece_index(name)]
-        return tuple(placements[value_index] for value_index in indices)
-
     problem = RelationalCSP[str, int]()
     for name in catalog.names:
         problem.add_variable(
@@ -297,7 +301,7 @@ def solve_orapa_csp(
         )
     _add_spatial_constraints(problem, catalog)
 
-    ray_oracles: list[_RaySupportOracle] = []
+    ray_oracles: list[tuple[Observation, _RaySupportOracle]] = []
     for observation in observations:
         if isinstance(observation, CellObservation):
             _add_cell_constraint(problem, catalog, observation)
@@ -311,21 +315,165 @@ def solve_orapa_csp(
             ),
             catalog,
             max_nodes=witness_node_limit,
+            cancelled=cancelled,
         )
-        ray_oracles.append(oracle)
+        if witness_cache is not None:
+            for portable in witness_cache.get(observation, ()):
+                oracle.witnesses.append(
+                    RayWitness(
+                        catalog.masks_from_known_gems(portable),
+                        (),
+                        observation.exit_point,
+                        observation.absorbed,
+                    )
+                )
+        ray_oracles.append((observation, oracle))
         problem.add_constraint(SupportConstraint(catalog.names, oracle))
 
-    propagated = problem.propagate()
-    propagated_domains = tuple(
-        PlacementDomain(name, gems_for(name, propagated.domains[name]))
+    return _BuiltProblem(problem, catalog, ray_oracles)
+
+
+def _save_witness_cache(built: _BuiltProblem, witness_cache: WitnessCache | None) -> None:
+    if witness_cache is None:
+        return
+    for observation, oracle in built.ray_oracles:
+        witness_cache[observation] = [
+            {
+                name: built.catalog.values_from_mask(
+                    name, witness.allowed_masks[built.catalog.piece_index(name)]
+                )
+                for name in built.catalog.names
+            }
+            for witness in oracle.witnesses
+        ]
+
+
+def _domains_from_index_domains(
+    catalog: PlacementCatalog, index_domains: Mapping[str, tuple[int, ...]]
+) -> tuple[PlacementDomain, ...]:
+    return tuple(
+        PlacementDomain(
+            name,
+            tuple(
+                catalog.placements[catalog.piece_index(name)][value_index]
+                for value_index in index_domains[name]
+            ),
+        )
         for name in catalog.names
     )
+
+
+def propagate_orapa_csp(
+    domains: tuple[PlacementDomain, ...],
+    observations: tuple[SolverObservation, ...],
+    *,
+    witness_node_limit: int = 2_000,
+    seed: int = 0,
+    deadline: float | None = None,
+    witness_cache: WitnessCache | None = None,
+) -> tuple[tuple[PlacementDomain, ...], int, int]:
+    """Réduit les domaines par cohérence d'arc seule, sans chercher de modèle.
+
+    Contrairement au filtre heuristique de ``relational_filter.py``, chaque
+    contrainte de rayon porte ici sur *toutes* les pièces à la fois (via le
+    même mécanisme de témoins que :func:`solve_orapa_csp`) : une pièce d'une
+    autre couleur qui bloquerait géométriquement un trajet est donc exclue
+    elle aussi, pas seulement les pièces dont la couleur explique le résultat
+    observé. C'est nettement moins cher qu'une résolution complète puisque
+    aucune recherche de modèle n'est tentée — seule la cohérence d'arc est
+    appliquée.
+
+    Retourne les domaines réduits, ainsi que le nombre d'indices d'onde dont
+    la contrainte a été pleinement vérifiée (``applied``) et celui dont au
+    moins une recherche de témoin a atteint sa limite sans conclure
+    (``deferred``).
+    """
+
+    cancelled = (
+        None if deadline is None else (lambda: time.monotonic() >= deadline)
+    )
+
+    if any(not domain.placements for domain in domains):
+        return domains, 0, 0
+
+    built = _build_problem(
+        domains,
+        observations,
+        witness_node_limit=witness_node_limit,
+        seed=seed,
+        cancelled=cancelled,
+        witness_cache=witness_cache,
+    )
+    propagated = built.problem.propagate()
+    _save_witness_cache(built, witness_cache)
+
     if not propagated.consistent:
+        empty = tuple(PlacementDomain(name, ()) for name in built.catalog.names)
+        deferred = sum(1 for _, oracle in built.ray_oracles if oracle.unknown)
+        return empty, len(built.ray_oracles) - deferred, deferred
+
+    reduced = _domains_from_index_domains(built.catalog, propagated.domains)
+    deferred = sum(1 for _, oracle in built.ray_oracles if oracle.unknown)
+    return reduced, len(built.ray_oracles) - deferred, deferred
+
+
+def solve_orapa_csp(
+    domains: tuple[PlacementDomain, ...],
+    observations: tuple[SolverObservation, ...],
+    *,
+    model_limit: int = 257,
+    witness_node_limit: int = 20_000,
+    seed: int = 0,
+    deadline: float | None = None,
+    witness_cache: WitnessCache | None = None,
+) -> OrapaModelResult:
+    """Résout les domaines avec des contraintes globales de rayon paresseuses.
+
+    Le CSP travaille sur des indices de placement entiers ; les ``Gem`` ne sont
+    reconstruits qu'aux frontières (résultat et vérification finale).
+
+    ``deadline``, s'il est fourni, est une valeur ``time.monotonic()`` au-delà
+    de laquelle chaque recherche de témoin abandonne et répond ``UNKNOWN``
+    (donc suppose la valeur supportée) plutôt que de continuer à explorer.
+    Cela borne le temps total de la résolution sans jamais produire de faux
+    négatif : seule la vérification finale de chaque modèle décide s'il est
+    conservé.
+
+    ``witness_cache``, s'il est fourni, est mis à jour en place : les témoins
+    trouvés sont conservés sous une forme indépendante du catalogue (donc
+    réutilisable même si l'ordre de tirage change d'un appel à l'autre), et
+    ceux déjà présents pour une observation sont rejoués avant toute nouvelle
+    recherche. Un appelant qui refait successivement des résolutions sur des
+    domaines de plus en plus réduits (au fil d'une partie) évite ainsi de
+    redémontrer les mêmes témoins à chaque nouvel indice.
+    """
+
+    cancelled = (
+        None if deadline is None else (lambda: time.monotonic() >= deadline)
+    )
+
+    if any(not domain.placements for domain in domains):
+        return OrapaModelResult(domains, (), True, False, 0)
+
+    built = _build_problem(
+        domains,
+        observations,
+        witness_node_limit=witness_node_limit,
+        seed=seed,
+        cancelled=cancelled,
+        witness_cache=witness_cache,
+    )
+    problem, catalog, ray_oracles = built.problem, built.catalog, built.ray_oracles
+
+    propagated = problem.propagate()
+    propagated_domains = _domains_from_index_domains(catalog, propagated.domains)
+    if not propagated.consistent:
+        _save_witness_cache(built, witness_cache)
         return OrapaModelResult(
             propagated_domains,
             (),
             True,
-            any(oracle.unknown for oracle in ray_oracles),
+            any(oracle.unknown for _, oracle in ray_oracles),
             0,
         )
 
@@ -340,8 +488,9 @@ def solve_orapa_csp(
         )
         if configuration_matches(configuration, observations):
             configurations.append(configuration)
-    unknown = any(oracle.unknown for oracle in ray_oracles)
+    unknown = any(oracle.unknown for _, oracle in ray_oracles)
     exhausted = searched.exhausted and not unknown
+    _save_witness_cache(built, witness_cache)
     return OrapaModelResult(
         propagated_domains,
         tuple(configurations),
@@ -351,4 +500,4 @@ def solve_orapa_csp(
     )
 
 
-__all__ = ["OrapaModelResult", "solve_orapa_csp"]
+__all__ = ["OrapaModelResult", "propagate_orapa_csp", "solve_orapa_csp"]
