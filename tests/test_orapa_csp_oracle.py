@@ -103,6 +103,51 @@ def test_an_expired_deadline_stops_the_search_instead_of_hanging() -> None:
     assert result.unknown_supports
 
 
+def test_an_external_cancel_signal_stops_the_search_like_a_deadline() -> None:
+    # Même chose, mais via un signal d'annulation externe plutôt qu'une
+    # échéance de temps — c'est ce qu'utilisera l'interface graphique pour
+    # interrompre un calcul en cours quand un nouvel indice arrive.
+    domains = tuple(
+        PlacementDomain(piece.name, placements(piece))
+        for piece in PIECES + (DIAMOND, BLACK_BODY)
+    )
+    observations = REAL_GAME_HISTORY[:1]
+
+    start = time.monotonic()
+    result = solve_orapa_csp(
+        domains,
+        observations,
+        model_limit=65,
+        witness_node_limit=20_000,
+        cancelled=lambda: True,
+    )
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 5.0
+    assert not result.exhausted
+    assert result.unknown_supports
+
+
+def test_propagate_also_respects_an_external_cancel_signal() -> None:
+    domains = tuple(
+        PlacementDomain(piece.name, placements(piece))
+        for piece in PIECES + (DIAMOND, BLACK_BODY)
+    )
+    observations = REAL_GAME_HISTORY[:1]
+
+    start = time.monotonic()
+    reduced, applied, deferred = propagate_orapa_csp(
+        domains,
+        observations,
+        witness_node_limit=20_000,
+        cancelled=lambda: True,
+    )
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 5.0
+    assert deferred >= 1
+
+
 def _generated_real_piece_problem(seed: int):
     random = Random(seed)
     definitions = PIECES + (DIAMOND, BLACK_BODY)

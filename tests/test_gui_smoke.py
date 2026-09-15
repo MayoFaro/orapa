@@ -21,10 +21,26 @@ from orapa_assistant.solver import CellContent, CellObservation, Observation, So
 def test_main_window_can_be_created() -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow(Solver([REAL_GAME_SOLUTION]))
-    assert window.right_panel.minimumWidth() == 320
-    assert window.right_panel.maximumWidth() == 320
+    assert bool(window.windowFlags() & Qt.WindowStaysOnTopHint)
+    # La grille — elle seule — vit dans sa propre fenêtre détachée, elle
+    # aussi toujours au-dessus ; le reste (variantes, affichage, conseils)
+    # reste sur la fenêtre principale, dans le volet « Certitudes et
+    # conseils ».
+    assert window.grid_window is not window
+    assert bool(window.grid_window.windowFlags() & Qt.WindowStaysOnTopHint)
+    assert window.grid_window.centralWidget() is window.board_panel
+    assert [
+        window.panel_tabs.tabText(index)
+        for index in range(window.panel_tabs.count())
+    ] == ["Saisie", "Certitudes et conseils"]
+    assert window.entry_panel.isVisibleTo(window)
+    assert not window.grid_side_widget.isVisibleTo(window)
+    window.panel_tabs.setCurrentIndex(1)
+    assert not window.entry_panel.isVisibleTo(window)
+    assert window.grid_side_widget.isVisibleTo(window)
+    window.panel_tabs.setCurrentIndex(0)
     assert window.board.width() < 450
-    assert window.board_panel.width() == window.board.width() + 28
+    assert window.board_panel.width() == window.board.width() + 20
     assert window.reset_button.text() == "Nouvelle partie"
     assert [label.text() for label in window.right_marker_labels] == list(RIGHT_POINTS)
     assert [label.text() for label in window.bottom_marker_labels] == list(BOTTOM_POINTS)

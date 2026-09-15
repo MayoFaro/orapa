@@ -13,9 +13,11 @@ large relation, while small relations can use :class:`ExtensionalConstraint`.
 
 from __future__ import annotations
 
-from collections import defaultdict, deque
+import heapq
+from collections import defaultdict
 from dataclasses import dataclass, field
 from itertools import product
+from math import prod
 from types import MappingProxyType
 from typing import (
     Callable,
@@ -44,7 +46,17 @@ __all__ = [
 
 
 class Constraint(Protocol[VariableT, ValueT]):
-    """Protocol implemented by every relation understood by the solver."""
+    """Protocol implemented by every relation understood by the solver.
+
+    A constraint may optionally define ``estimated_cost(domains) -> int``
+    (absent from this protocol, checked with ``getattr`` at propagation
+    time) when its formal ``scope`` does not reflect how expensive it
+    actually is to revise — e.g. a global constraint whose scope spans
+    every variable but whose real cost only depends on a handful of them.
+    Propagation uses it, when present, in place of the default proxy
+    (the product of the scope's domain sizes) to decide which arc to
+    revise first.
+    """
 
     scope: tuple[VariableT, ...]
 
@@ -179,14 +191,21 @@ class SupportConstraint(Generic[VariableT, ValueT]):
     support_finder: SupportFinder[VariableT, ValueT] = field(
         repr=False, compare=False
     )
+    cost_hint: Callable[[Mapping[VariableT, tuple[ValueT, ...]]], int] | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def __init__(
         self,
         scope: Iterable[VariableT],
         support_finder: SupportFinder[VariableT, ValueT],
+        *,
+        cost_hint: Callable[[Mapping[VariableT, tuple[ValueT, ...]]], int]
+        | None = None,
     ) -> None:
         object.__setattr__(self, "scope", _normalise_scope(scope))
         object.__setattr__(self, "support_finder", support_finder)
+        object.__setattr__(self, "cost_hint", cost_hint)
 
     def has_support(
         self,
@@ -200,6 +219,19 @@ class SupportConstraint(Generic[VariableT, ValueT]):
             {scoped_variable: domains[scoped_variable] for scoped_variable in self.scope}
         )
         return self.support_finder(variable, value, scoped_domains)
+
+    def estimated_cost(
+        self, domains: Mapping[VariableT, tuple[ValueT, ...]]
+    ) -> int:
+        if self.cost_hint is not None:
+            scoped_domains = MappingProxyType(
+                {
+                    scoped_variable: domains[scoped_variable]
+                    for scoped_variable in self.scope
+                }
+            )
+            return self.cost_hint(scoped_domains)
+        return prod(len(domains[variable]) for variable in self.scope)
 
 
 @dataclass(frozen=True)
@@ -493,17 +525,43 @@ class RelationalCSP(Generic[VariableT, ValueT]):
                 MappingProxyType(domains), False, 0, 0
             )
 
-        pending = deque(
-            (constraint_index, variable)
-            for constraint_index, constraint in enumerate(self._constraints)
-            for variable in constraint.scope
-        )
-        queued = set(pending)
+        # File de priorité plutôt que FIFO : une contrainte dont la portée ne
+        # touche que de petits domaines est révisée avant une contrainte plus
+        # coûteuse, même arrivée plus tôt. Le résultat final (point fixe) est
+        # inchangé quel que soit l'ordre ; seul le coût pour l'atteindre en
+        # dépend. Le coût est réestimé à chaque insertion (les domaines
+        # rétrécissent au fil de la propagation), pas figé une fois pour
+        # toutes.
+        counter = 0
+
+        def arc_cost(constraint_index: int, variable: VariableT) -> int:
+            constraint = self._constraints[constraint_index]
+            # Une contrainte peut fournir sa propre estimation (point
+            # d'extension facultatif, absent du protocole `Constraint` de
+            # base) quand la portée formelle ne reflète pas fidèlement le
+            # coût réel — p. ex. une contrainte globale dont la portée
+            # couvre toutes les variables mais dont le coût effectif ne
+            # dépend que de quelques-unes d'entre elles.
+            estimator = getattr(constraint, "estimated_cost", None)
+            if estimator is not None:
+                return estimator(MappingProxyType(domains))
+            return prod(len(domains[name]) for name in constraint.scope)
+
+        pending: list[tuple[int, int, int, VariableT]] = []
+        queued: set[tuple[int, VariableT]] = set()
+        for constraint_index, constraint in enumerate(self._constraints):
+            for variable in constraint.scope:
+                heapq.heappush(
+                    pending,
+                    (arc_cost(constraint_index, variable), counter, constraint_index, variable),
+                )
+                counter += 1
+                queued.add((constraint_index, variable))
         removed_values = 0
         revised_arcs = 0
 
         while pending:
-            constraint_index, variable = pending.popleft()
+            _, _, constraint_index, variable = heapq.heappop(pending)
             queued.remove((constraint_index, variable))
             constraint = self._constraints[constraint_index]
             domain_view = MappingProxyType(domains)
@@ -531,7 +589,16 @@ class RelationalCSP(Generic[VariableT, ValueT]):
                 for affected_variable in neighbour.scope:
                     arc = (neighbour_index, affected_variable)
                     if arc not in queued:
-                        pending.append(arc)
+                        heapq.heappush(
+                            pending,
+                            (
+                                arc_cost(neighbour_index, affected_variable),
+                                counter,
+                                neighbour_index,
+                                affected_variable,
+                            ),
+                        )
+                        counter += 1
                         queued.add(arc)
 
         return PropagationResult(

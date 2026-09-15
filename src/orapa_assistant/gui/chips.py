@@ -186,7 +186,13 @@ class ColorChipSelector(_ChipGroup):
 
 
 class ObservationChipPanel(QWidget):
-    """Regroupe entrée, sortie et couleur ; câble l'auto‑report de la sortie."""
+    """Regroupe entrée et sortie ; câble l'auto‑report de la sortie.
+
+    La couleur (``color``) est un sélecteur indépendant : ce panneau le
+    construit et câble l'auto-report, mais ne l'ajoute pas à sa propre
+    disposition — l'appelant le place où il veut (p. ex. à côté d'un autre
+    contrôle, plutôt que sous l'entrée et la sortie).
+    """
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -195,18 +201,11 @@ class ObservationChipPanel(QWidget):
         self.color = ColorChipSelector()
         self.entry.changed.connect(self._mirror_exit)
 
-        color_column = QVBoxLayout()
-        color_column.setSpacing(2)
-        color_column.addWidget(_label("Couleur"))
-        color_column.addWidget(self.color)
-        color_column.addStretch()
-
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(14)
         layout.addWidget(self.entry, 0, Qt.AlignTop)
         layout.addWidget(self.exit, 0, Qt.AlignTop)
-        layout.addLayout(color_column)
         layout.addStretch(1)
 
     def _mirror_exit(self) -> None:

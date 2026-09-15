@@ -9,15 +9,16 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QFormLayout,
     QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
+    QListView,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QPushButton,
     QStyledItemDelegate,
+    QTabBar,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -42,6 +43,17 @@ CELL_CONTENT_LABELS = {
     CellContent.DIAMOND: "Diamant",
     CellContent.BLACK_BODY: "Signal absorbé (corps noir)",
 }
+
+
+def _format_observation_text(observation) -> str:
+    if isinstance(observation, CellObservation):
+        return f"Case {observation.cell} → {CELL_CONTENT_LABELS[observation.content]}"
+    if observation.absorbed:
+        return f"{observation.entry} → onde absorbée"
+    return (
+        f"{observation.entry} → {observation.exit_point}  "
+        f"{COLOR_LABELS[observation.color]}"
+    )
 
 
 class SolverWorker(QThread):
@@ -145,10 +157,10 @@ GEM_LABELS = {
     "black_body": "corps noir",
 }
 
-BOARD_COLUMN_WIDTH = 38
-BOARD_ROW_HEIGHT = 30
-BOTTOM_MARKER_HEIGHT = 20
-RIGHT_MARKER_WIDTH = 26
+BOARD_COLUMN_WIDTH = 22
+BOARD_ROW_HEIGHT = 18
+BOTTOM_MARKER_HEIGHT = 14
+RIGHT_MARKER_WIDTH = 18
 
 
 class MainWindow(QMainWindow):
@@ -158,7 +170,6 @@ class MainWindow(QMainWindow):
         self.history_store = history_store
         self._worker: SolverWorker | None = None
         self.setWindowTitle("Orapa Mine Assistant")
-        self.resize(900, 650)
 
         self.board = QTableWidget(8, 10)
         self.board.setHorizontalHeaderLabels([str(number) for number in range(1, 11)])
@@ -265,7 +276,19 @@ class MainWindow(QMainWindow):
         self.count_label.setWordWrap(True)
         self.certainty_label.setWordWrap(True)
         self.recommendation_label.setWordWrap(True)
+        # Largeur fixe : le sizeHint() d'un QLabel à retour à la ligne ne
+        # reflète sa hauteur réelle qu'une fois une largeur connue — sans
+        # quoi Qt sous-estime la place nécessaire tant que le libellé n'a
+        # jamais été redimensionné à sa largeur définitive.
+        for label in (self.count_label, self.certainty_label, self.recommendation_label):
+            label.setFixedWidth(170)
         self.history = QListWidget()
+        # Deux colonnes plutôt qu'une longue liste verticale : au-delà d'un
+        # certain nombre d'indices, les suivants se décalent naturellement
+        # dans la colonne suivante au lieu d'exiger de faire défiler.
+        self.history.setFlow(QListView.TopToBottom)
+        self.history.setWrapping(True)
+        self.history.setResizeMode(QListView.Adjust)
 
         self.diamond_checkbox = QCheckBox("Variante diamant")
         self.black_checkbox = QCheckBox("Variante corps noir")
@@ -308,65 +331,138 @@ class MainWindow(QMainWindow):
         self.cell_container.setLayout(cell_form)
 
         wave_layout = QVBoxLayout()
+        # La couleur reste à côté d'entrée/sortie (16 boutons sur 8 rangées :
+        # bien plus haut qu'une ligne de menu, donc l'empiler au-dessus
+        # augmenterait la hauteur totale au lieu de la réduire). On lui
+        # retire juste son libellé, inutile et un peu de hauteur en moins.
+        color_column = QVBoxLayout()
+        color_column.setContentsMargins(0, 0, 0, 0)
+        color_column.addWidget(self.color_selector, 0, Qt.AlignTop)
+        color_column.addStretch(1)
+
+        wave_row = QHBoxLayout()
+        wave_row.setContentsMargins(0, 0, 0, 0)
+        wave_row.addWidget(self.observation_panel)
+        wave_row.addLayout(color_column)
+        wave_row.addStretch(1)
+
         wave_layout.setContentsMargins(0, 0, 0, 0)
-        wave_layout.addWidget(self.observation_panel)
+        wave_layout.addLayout(wave_row)
         wave_layout.addWidget(self.absorbed)
         self.wave_container = QWidget()
         self.wave_container.setLayout(wave_layout)
 
-        observation_layout = QVBoxLayout()
         action_row = QHBoxLayout()
         action_row.addWidget(QLabel("Action"))
         action_row.addWidget(self.action_type)
         action_row.addStretch(1)
+
+        # Largeur bornée à celle d'entrée+sortie : sans ça, le bouton
+        # s'étire aussi sous les chips de couleur, plus larges, au lieu de
+        # se glisser juste sous les chips de lettres.
+        self.add_button.setMaximumWidth(610)
+        add_button_row = QHBoxLayout()
+        add_button_row.addWidget(self.add_button)
+        add_button_row.addStretch(1)
+
+        observation_layout = QVBoxLayout()
         observation_layout.addLayout(action_row)
         observation_layout.addWidget(self.wave_container)
         observation_layout.addWidget(self.cell_container)
-        observation_layout.addWidget(self.add_button)
-        self.observation_area = QGroupBox("Nouvelle observation")
+        observation_layout.addLayout(add_button_row)
+        self.observation_area = QWidget()
         self.observation_area.setLayout(observation_layout)
 
-        right = QVBoxLayout()
-        right.addWidget(self.diamond_checkbox)
-        right.addWidget(self.black_checkbox)
-        right.addWidget(self.count_label)
-        right.addWidget(self.certainty_label)
-        right.addWidget(self.recommendation_label)
+        # --- Volet « Certitudes et conseils » : choix (variantes, affichage)
+        # et détail d'avancée sur deux colonnes plutôt qu'empilés : ça prend
+        # moins de hauteur.
+        grid_side_choices = QVBoxLayout()
+        grid_side_choices.addWidget(self.diamond_checkbox)
+        grid_side_choices.addWidget(self.black_checkbox)
         solution_view_row = QHBoxLayout()
         solution_view_row.addWidget(self.solution_view_label)
         solution_view_row.addWidget(self.solution_view)
-        right.addLayout(solution_view_row)
+        grid_side_choices.addLayout(solution_view_row)
+        grid_side_choices.addStretch(1)
+
+        grid_side_progress = QVBoxLayout()
+        grid_side_progress.addWidget(self.count_label)
+        grid_side_progress.addWidget(self.certainty_label)
+        grid_side_progress.addWidget(self.recommendation_label)
+        grid_side_progress.addStretch(1)
+
+        grid_side_row = QHBoxLayout()
+        grid_side_row.addLayout(grid_side_choices)
+        grid_side_row.addLayout(grid_side_progress)
+        self.grid_side_widget = QWidget()
+        self.grid_side_widget.setLayout(grid_side_row)
+
+        # --- Volet « Saisie » : chips à gauche, historique à droite.
+        history_column = QVBoxLayout()
         self.history_label = QLabel("Historique")
         if self.history_store is not None:
             self.history_label.setToolTip(
                 f"Sauvegarde locale : {self.history_store.path}"
             )
-        right.addWidget(self.history_label)
-        right.addWidget(self.history)
+        history_column.addWidget(self.history_label)
+        history_column.addWidget(self.history)
         history_buttons = QHBoxLayout()
         history_buttons.addWidget(self.remove_button)
         history_buttons.addWidget(self.reset_button)
-        right.addLayout(history_buttons)
+        history_column.addLayout(history_buttons)
+        history_widget = QWidget()
+        history_widget.setLayout(history_column)
 
-        self.right_panel = QWidget()
-        self.right_panel.setLayout(right)
-        self.right_panel.setFixedWidth(320)
+        entry_panel_layout = QHBoxLayout()
+        entry_panel_layout.addWidget(self.observation_area)
+        entry_panel_layout.addWidget(history_widget)
+        self.entry_panel = QWidget()
+        self.entry_panel.setLayout(entry_panel_layout)
 
-        left_column = QVBoxLayout()
-        left_column.addWidget(self.board_panel, 0, Qt.AlignTop | Qt.AlignLeft)
-        left_column.addWidget(self.observation_area)
-        left_column.addStretch(1)
+        # Témoin d'activité : un seul, sur la fenêtre principale — la fenêtre
+        # de grille ne contient plus que la grille elle-même.
+        self.status_indicator = QLabel()
+        self.status_indicator.setAlignment(Qt.AlignCenter)
+        self.status_indicator.setAutoFillBackground(True)
+        self._set_status_indicator(busy=False)
 
-        layout = QHBoxLayout()
-        layout.addLayout(left_column)
-        layout.addStretch(1)
-        layout.addWidget(self.right_panel)
+        # --- Fenêtre détachée : uniquement la grille, toujours au-dessus.
+        self.grid_window = QMainWindow()
+        self.grid_window.setWindowTitle("Orapa Mine — Grille")
+        self.grid_window.setCentralWidget(self.board_panel)
+        self.grid_window.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+
+        # --- Fenêtre principale : deux volets, « Saisie » et « Certitudes
+        # et conseils » (l'ancien contenu du volet grille, hors la grille
+        # elle-même, désormais détachée).
+        self.panel_tabs = QTabBar()
+        self.panel_tabs.addTab("Saisie")
+        self.panel_tabs.addTab("Certitudes et conseils")
+        self.panel_tabs.currentChanged.connect(self._switch_panel)
+
+        main_layout = QVBoxLayout()
+        main_layout.addWidget(self.status_indicator)
+        main_layout.addWidget(self.panel_tabs)
+        main_layout.addWidget(self.entry_panel)
+        main_layout.addWidget(self.grid_side_widget)
         central = QWidget()
-        central.setLayout(layout)
+        central.setLayout(main_layout)
         self.setCentralWidget(central)
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        self._switch_panel(0)
         self._update_result_controls()
         self._persist_current()
         self.refresh()
+        self.grid_window.show()
+
+    def _switch_panel(self, index: int) -> None:
+        self.entry_panel.setVisible(index == 0)
+        self.grid_side_widget.setVisible(index == 1)
+        # Sans ça, la fenêtre garde la hauteur du volet le plus haut même une
+        # fois basculée sur l'autre, plus court — elle doit épouser le volet
+        # affiché, pas le maximum des deux.
+        self.centralWidget().layout().activate()
+        self.resize(self.centralWidget().sizeHint())
 
     def _add_observation(self) -> None:
         try:
@@ -391,6 +487,15 @@ class MainWindow(QMainWindow):
         except ValueError as error:
             QMessageBox.warning(self, "Saisie incomplète", str(error))
             return
+        # Confirmation immédiate, avant même que le calcul ne démarre : sans
+        # ça, un ajout pendant que le moteur travaille encore n'apparaît
+        # dans l'historique qu'une fois CE calcul terminé, ce qui peut
+        # prendre un moment — laissant croire que la saisie s'est perdue.
+        pending_item = QListWidgetItem(
+            f"{_format_observation_text(observation)}  (en attente…)"
+        )
+        pending_item.setData(Qt.UserRole, None)
+        self.history.insertItem(0, pending_item)
         self._start_solver_task(
             lambda: self.solver.add_observation(observation),
             show_result_alerts=True,
@@ -418,22 +523,24 @@ class MainWindow(QMainWindow):
                 "modèle. Vous pouvez les comparer avec le sélecteur Afficher.",
             )
 
+    def _set_status_indicator(self, *, busy: bool) -> None:
+        text = "⏳ En réflexion…" if busy else "✓ Prêt"
+        colour = "#fff3c4" if busy else "#d9f2d9"
+        style = f"padding: 2px 10px; font-weight: bold; background-color: {colour};"
+        self.status_indicator.setText(text)
+        self.status_indicator.setStyleSheet(style)
+
     def _set_busy(self, busy: bool) -> None:
-        self.action_type.setEnabled(not busy)
-        self.cell_row.setEnabled(not busy)
-        self.cell_column.setEnabled(not busy)
-        self.cell_content.setEnabled(not busy)
-        self.diamond_checkbox.setEnabled(not busy)
-        self.black_checkbox.setEnabled(not busy)
-        self.add_button.setEnabled(not busy)
-        self.remove_button.setEnabled(not busy)
-        self.reset_button.setEnabled(not busy)
-        self.solution_view.setEnabled(not busy)
-        self._update_result_controls(force_busy=busy)
+        # L'interface reste utilisable pendant un calcul : saisir un nouvel
+        # indice et cliquer sur Ajouter interrompt le calcul en cours et
+        # relance immédiatement avec la saisie à jour (voir
+        # `_start_solver_task`), plutôt que de bloquer les commandes.
+        self._set_status_indicator(busy=busy)
         if busy:
             self.count_label.setText("Mise à jour des contraintes…")
             self.recommendation_label.setText(
-                "Calcul en arrière-plan — l’interface reste réactive"
+                "Calcul en arrière-plan — un nouvel ajout l’interrompt "
+                "et relance aussitôt"
             )
 
     def _start_solver_task(
@@ -444,7 +551,14 @@ class MainWindow(QMainWindow):
         persist_current: bool = True,
     ) -> None:
         if self._worker is not None:
-            return
+            # Un calcul est déjà en cours : on l'interrompt pour repartir
+            # aussitôt avec la demande à jour (nouvel indice, suppression,
+            # nouvelle partie...) au lieu d'ignorer la saisie ou de faire
+            # attendre l'utilisateur. L'interruption est vérifiée très
+            # souvent par le moteur (à chaque nœud exploré), donc cette
+            # attente reste imperceptible.
+            self._worker.requestInterruption()
+            self._worker.wait()
         self._set_busy(True)
 
         def operation_with_persistence() -> None:
@@ -453,22 +567,28 @@ class MainWindow(QMainWindow):
                 self._persist_current()
 
         worker = SolverWorker(operation_with_persistence, self)
+        self.solver.cancelled = worker.isInterruptionRequested
         self._worker = worker
 
         def succeeded() -> None:
+            if self._worker is not worker:
+                return  # supplanté par une demande plus récente
             self._set_busy(False)
             self.refresh()
             if show_result_alerts:
                 self._show_result_alerts()
 
         def failed(message: str) -> None:
+            if self._worker is not worker:
+                return
             self._set_busy(False)
             self.refresh()
             QMessageBox.critical(self, "Opération impossible", message)
 
         def cleanup() -> None:
             worker.deleteLater()
-            self._worker = None
+            if self._worker is worker:
+                self._worker = None
 
         worker.succeeded.connect(succeeded)
         worker.failed.connect(failed)
@@ -477,11 +597,22 @@ class MainWindow(QMainWindow):
 
     def _remove_observation(self) -> None:
         item = self.history.currentItem()
-        if item is not None:
-            history_index = item.data(Qt.UserRole)
-            self._start_solver_task(
-                lambda: self.solver.remove_observation(history_index)
+        if item is None:
+            return
+        history_index = item.data(Qt.UserRole)
+        if history_index is None:
+            # Ligne encore "en attente" : le moteur ne l'a pas encore prise
+            # en compte, rien à retirer de son historique pour l'instant.
+            QMessageBox.information(
+                self,
+                "Encore en attente",
+                "Cet indice n’a pas encore été pris en compte par le "
+                "moteur — réessayez dans un instant.",
             )
+            return
+        self._start_solver_task(
+            lambda: self.solver.remove_observation(history_index)
+        )
 
     def _reset_game(self) -> None:
         if self.solver.history:
@@ -531,6 +662,7 @@ class MainWindow(QMainWindow):
                 "Historique non sauvegardé",
                 f"Impossible d’enregistrer l’historique : {error}",
             )
+        self.grid_window.close()
         super().closeEvent(event)
 
     def refresh(self) -> None:
@@ -586,19 +718,7 @@ class MainWindow(QMainWindow):
         self.history.clear()
         for history_index in range(len(self.solver.history) - 1, -1, -1):
             observation = self.solver.history[history_index]
-            if isinstance(observation, CellObservation):
-                text = (
-                    f"Case {observation.cell} → "
-                    f"{CELL_CONTENT_LABELS[observation.content]}"
-                )
-            else:
-                text = (
-                    f"{observation.entry} → onde absorbée"
-                    if observation.absorbed
-                    else f"{observation.entry} → {observation.exit_point}  "
-                    f"{COLOR_LABELS[observation.color]}"
-                )
-            item = QListWidgetItem(text)
+            item = QListWidgetItem(_format_observation_text(observation))
             item.setData(Qt.UserRole, history_index)
             self.history.addItem(item)
         if self.history_store is not None:

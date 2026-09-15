@@ -177,6 +177,116 @@ def test_support_search_matches_exhaustive_oracle_on_reduced_domains() -> None:
                 )
 
 
+def test_search_all_matches_exhaustive_oracle_on_reduced_domains() -> None:
+    # `search_all_masks` doit calculer, en un seul appel, exactement ce que
+    # `search_masks` calcule en un appel par (pièce, valeur) — mais sans
+    # jamais relancer une recherche complète pour chaque valeur candidate.
+    catalog = _small_catalog()
+    configurations = tuple(product(*catalog.placements))
+    outcomes = {
+        outcome
+        for gems in configurations
+        if (outcome := _outcome_or_none(gems, "A")) is not None
+    }
+    shared_index = LocalHitIndex(catalog)
+
+    for outcome in outcomes:
+        finder = RayWitnessFinder(catalog, "A", outcome, hit_index=shared_index)
+        result = finder.search_all_masks(catalog.full_masks, max_nodes=100_000)
+        assert result.definitive
+        for piece_index, piece_name in enumerate(catalog.names):
+            expected_mask = 0
+            for value_index, value in enumerate(catalog.placements[piece_index]):
+                expected = any(
+                    gems[piece_index] == value
+                    and _outcome_or_none(gems, "A") == outcome
+                    for gems in configurations
+                )
+                if expected:
+                    expected_mask |= 1 << value_index
+            assert result.achieved_masks[piece_index] == expected_mask, (
+                outcome,
+                piece_name,
+            )
+
+
+@pytest.mark.parametrize(
+    ("seed", "entry"), ((11, "A"), (29, "6"), (47, "15"), (71, "K"))
+)
+def test_search_all_matches_oracle_on_real_piece_subdomains(
+    seed: int, entry: str
+) -> None:
+    rng = random.Random(seed + 1000)
+    definitions = (*PIECES, DIAMOND, BLACK_BODY)
+    catalog = PlacementCatalog(
+        {
+            definition.name: tuple(rng.sample(placements(definition), 2))
+            for definition in definitions
+        }
+    )
+    configurations = tuple(product(*catalog.placements))
+    by_outcome: dict[RayOutcome, list[tuple[Gem, ...]]] = {}
+    for gems in configurations:
+        outcome = _outcome_or_none(gems, entry)
+        if outcome is not None:
+            by_outcome.setdefault(outcome, []).append(gems)
+
+    shared_index = LocalHitIndex(catalog)
+    for outcome, matching in by_outcome.items():
+        finder = RayWitnessFinder(catalog, entry, outcome, hit_index=shared_index)
+        result = finder.search_all_masks(catalog.full_masks, max_nodes=100_000)
+        assert result.definitive
+        for piece_index in range(len(catalog)):
+            expected_mask = 0
+            for value_index, value in enumerate(catalog.placements[piece_index]):
+                if any(gems[piece_index] == value for gems in matching):
+                    expected_mask |= 1 << value_index
+            assert result.achieved_masks[piece_index] == expected_mask
+
+
+def test_search_all_masks_stops_early_once_every_queried_value_is_proven() -> None:
+    # Dès que toutes les valeurs interrogées sont prouvées supportées, la
+    # recherche doit s'arrêter sans épuiser tout le graphe accessible. Pour
+    # ce violet précis, seuls red[0] et blue[0] sont géométriquement
+    # possibles (vérifié par force brute) : en interrogeant exactement ce
+    # sous-ensemble, tout doit être prouvé sans qu'il reste rien à explorer.
+    catalog = _small_catalog()
+    finder = RayWitnessFinder(catalog, "A", RayOutcome("I", RayColor.VIOLET))
+    achievable_query = (1, 1, catalog.full_masks[2], catalog.full_masks[3])
+    result = finder.search_all_masks(achievable_query, max_nodes=100_000)
+    assert result.definitive
+    assert result.achieved_masks == achievable_query
+
+
+def test_search_all_masks_budget_and_cancellation_are_conservative() -> None:
+    # Budget épuisé ou annulation : la progression réelle (même partielle,
+    # même vide) est renvoyée — jamais une exclusion à tort. Avec un budget
+    # nul, rien n'a encore été exploré : la progression est donc vide, mais
+    # `achieved_masks` reste un sous-ensemble sûr des masques d'origine
+    # (jamais plus large qu'eux).
+    catalog = _small_catalog()
+    finder = RayWitnessFinder(catalog, "A", RayOutcome("I", RayColor.VIOLET))
+
+    budget = finder.search_all_masks(catalog.full_masks, max_nodes=0)
+    assert not budget.definitive
+    assert budget.achieved_masks == tuple(0 for _ in catalog.full_masks)
+    assert budget.reason == "node_budget"
+
+    cancelled = finder.search_all_masks(
+        catalog.full_masks, cancelled=lambda: True
+    )
+    assert not cancelled.definitive
+    assert cancelled.achieved_masks == tuple(0 for _ in catalog.full_masks)
+    assert cancelled.reason == "cancelled"
+
+    # Avec un budget modeste, la progression accumulée reste toujours un
+    # sous-ensemble des masques interrogés — jamais plus, jamais faussée.
+    partial = finder.search_all_masks(catalog.full_masks, max_nodes=3)
+    assert not partial.definitive
+    for achieved, full in zip(partial.achieved_masks, catalog.full_masks):
+        assert achieved & ~full == 0
+
+
 @pytest.mark.parametrize(
     ("seed", "entry"), ((11, "A"), (29, "6"), (47, "15"), (71, "K"))
 )

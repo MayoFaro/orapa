@@ -75,6 +75,33 @@ class RayWitness:
 
 
 @dataclass(frozen=True)
+class AllSupportResult:
+    """Résultat d'une recherche accumulée sur toutes les pièces à la fois.
+
+    Contrairement à :class:`WitnessSearchResult` (un seul témoin), cette
+    recherche continue d'explorer après le premier témoin trouvé pour
+    calculer, en un seul parcours du graphe, l'ensemble des valeurs encore
+    supportées pour toutes les pièces interrogées.
+
+    ``definitive`` est faux uniquement quand le budget (nœuds ou échéance)
+    a été atteint avant preuve complète. ``achieved_masks`` reste, dans ce
+    cas, la progression réelle accumulée jusque-là — un sous-ensemble sûr
+    des valeurs prouvées supportées (jamais une exclusion à tort), mais pas
+    forcément complet. Pour une utilisation prudente en filtrage, l'appelant
+    doit alors garder ``domaine_interrogé & ~achieved_masks`` dans le
+    domaine plutôt que de l'exclure ; cette information reste toutefois
+    utile pour ne relancer une recherche ciblée que sur ce qui manque
+    encore, au lieu de tout reprendre à zéro.
+    """
+
+    achieved_masks: tuple[int, ...]
+    definitive: bool
+    explored_nodes: int
+    cycle_prunes: int = 0
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
 class WitnessSearchResult:
     status: WitnessSearchStatus
     witness: RayWitness | None
@@ -489,6 +516,125 @@ class RayWitnessFinder:
             cycle_prunes,
         )
 
+    def search_all_masks(
+        self,
+        masks: Sequence[int],
+        *,
+        max_nodes: int | None = None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> AllSupportResult:
+        """Calcule en un seul parcours les valeurs encore supportées, pour
+        toutes les pièces interrogées à la fois.
+
+        Contrairement à :meth:`search_masks`, qui s'arrête dès le premier
+        témoin trouvé, cette méthode continue d'explorer pour accumuler
+        (par OU binaire) les masques de chaque témoin rencontré, jusqu'à ce
+        que toute valeur interrogée soit soit prouvée soit le graphe
+        accessible épuisé. Le coût devient ainsi proportionnel à la taille
+        de l'espace de recherche partagé, plus jamais au nombre de valeurs
+        candidates interrogées.
+        """
+
+        if max_nodes is not None and max_nodes < 0:
+            raise ValueError("max_nodes doit être positif ou nul")
+        domain_masks = tuple(masks)
+        if len(domain_masks) != len(self.catalog):
+            raise ValueError("un masque de domaine est requis par pièce")
+        if any(mask < 0 for mask in domain_masks):
+            raise ValueError("un masque de domaine ne peut pas être négatif")
+        domain_masks = tuple(
+            mask & full
+            for mask, full in zip(domain_masks, self.catalog.full_masks)
+        )
+        if any(mask == 0 for mask in domain_masks):
+            return AllSupportResult(
+                tuple(0 for _ in domain_masks), True, 0, 0
+            )
+
+        position, direction = ray_entry_state(self.entry)
+        stack = [
+            _SearchNode(position, direction, 0, domain_masks, frozenset(), ())
+        ]
+        explored_nodes = 0
+        cycle_prunes = 0
+        explored_states: set[
+            tuple[
+                Point,
+                Direction,
+                int,
+                tuple[int, ...],
+                frozenset[tuple[Point, Direction]],
+            ]
+        ] = set()
+        achieved = [0] * len(domain_masks)
+        remaining = list(domain_masks)
+
+        while stack:
+            if all(value == 0 for value in remaining):
+                return AllSupportResult(
+                    tuple(achieved), True, explored_nodes, cycle_prunes
+                )
+            if cancelled is not None and cancelled():
+                return AllSupportResult(
+                    tuple(achieved),
+                    False,
+                    explored_nodes,
+                    cycle_prunes,
+                    "cancelled",
+                )
+            if max_nodes is not None and explored_nodes >= max_nodes:
+                return AllSupportResult(
+                    tuple(achieved),
+                    False,
+                    explored_nodes,
+                    cycle_prunes,
+                    "node_budget",
+                )
+
+            node = stack.pop()
+            explored_nodes += 1
+            state = (node.position, node.direction)
+            if state in node.visited:
+                cycle_prunes += 1
+                continue
+            state_key = (
+                node.position,
+                node.direction,
+                node.colors,
+                node.masks,
+                node.visited,
+            )
+            if state_key in explored_states:
+                continue
+            explored_states.add(state_key)
+
+            state_indices = tuple(
+                self.hit_index.for_state(index, node.position, node.direction)
+                for index in range(len(self.catalog))
+            )
+
+            terminals = self._terminal_witnesses(node, state_indices)
+            for terminal in terminals:
+                for index, value in enumerate(terminal.allowed_masks):
+                    achieved[index] |= value
+                    remaining[index] &= ~value
+
+            # Un témoin trouvé ici ne couvre qu'un sous-ensemble des valeurs
+            # de ce nœud (celles qui provoquent cet arrêt précis) : d'autres
+            # valeurs, non couvertes, peuvent encore mener plus loin à
+            # d'autres témoins via une réflexion. Contrairement à la
+            # recherche à un seul témoin, on ne s'arrête donc jamais ici —
+            # on développe toujours les enfants, même après en avoir trouvé.
+            visited = node.visited | {state}
+            children = self._reflection_children(node, state_indices, visited)
+            stack.extend(reversed(children))
+
+        # Graphe accessible épuisé : achieved contient la vérité exacte,
+        # toute valeur qui n'y figure pas est prouvée non supportée.
+        return AllSupportResult(
+            tuple(achieved), True, explored_nodes, cycle_prunes
+        )
+
     def _terminal_witness(
         self,
         node: _SearchNode,
@@ -560,6 +706,75 @@ class RayWitnessFinder:
                     tuple(allowed), node.legs + (leg,), None, True
                 )
         return None
+
+    def _terminal_witnesses(
+        self,
+        node: _SearchNode,
+        state_indices: tuple[StateHitIndex, ...],
+    ) -> list[RayWitness]:
+        """Comme :meth:`_terminal_witness`, mais renvoie tous les témoins
+        possibles à ce nœud plutôt que le premier trouvé.
+
+        Sans objet pour un rayon coloré ou transparent : à un nœud donné,
+        ``_terminal_witness`` couvre déjà toute la liberté restante des
+        pièces en une seule fois (aucune ambiguïté à départager). Seule
+        l'absorption peut avoir plusieurs témoins distincts au même nœud
+        (plusieurs corps noirs candidats à des distances différentes).
+        """
+
+        if self.expected.absorbed:
+            return self._absorption_witnesses(node, state_indices)
+        single = self._terminal_witness(node, state_indices)
+        return [single] if single is not None else []
+
+    def _absorption_witnesses(
+        self,
+        node: _SearchNode,
+        state_indices: tuple[StateHitIndex, ...],
+    ) -> list[RayWitness]:
+        candidates: list[tuple[int, int, int]] = []
+        for actor, (mask, index) in enumerate(zip(node.masks, state_indices)):
+            if not self.catalog.absorbs[actor]:
+                continue
+            for distance, raw_mask in index.absorbing_at.items():
+                actor_mask = mask & raw_mask
+                if actor_mask:
+                    candidates.append((distance, actor, actor_mask))
+        candidates.sort()
+
+        witnesses: list[RayWitness] = []
+        for distance, actor, actor_mask in candidates:
+            allowed: list[int] = []
+            valid = True
+            for piece_index, (mask, index) in enumerate(
+                zip(node.masks, state_indices)
+            ):
+                if piece_index == actor:
+                    current = actor_mask
+                elif piece_index < actor and self.catalog.absorbs[piece_index]:
+                    current = mask & index.strict_after(distance)
+                else:
+                    current = mask & index.not_before(distance)
+                if not current:
+                    valid = False
+                    break
+                allowed.append(current)
+            if not valid:
+                continue
+            hit_point = advance_ray(node.position, node.direction, distance)
+            leg = RayWitnessLeg(
+                node.position,
+                node.direction,
+                distance,
+                hit_point,
+                self.catalog.names[actor],
+                None,
+                True,
+            )
+            witnesses.append(
+                RayWitness(tuple(allowed), node.legs + (leg,), None, True)
+            )
+        return witnesses
 
     def _reflection_children(
         self,
@@ -690,6 +905,7 @@ class RayWitnessFinder:
 
 
 __all__ = [
+    "AllSupportResult",
     "LocalHitIndex",
     "PlacementCatalog",
     "RayWitness",

@@ -1,3 +1,4 @@
+import time
 from unittest.mock import patch
 
 from orapa_assistant.colors import RayColor as C
@@ -14,6 +15,55 @@ def test_exact_solve_is_not_attempted_below_the_minimum_observation_count() -> N
         solver.add_observations(REAL_GAME_HISTORY[:5])
 
     mocked.assert_not_called()
+
+
+def test_propagate_uses_a_short_budget_below_the_minimum_observation_count() -> None:
+    # En dessous du seuil, on sait déjà que rien ne sera résolu : inutile de
+    # laisser le filtrage rapide consommer son budget complet (10s) sur un
+    # indice isolé qui ne peut de toute façon rien prouver.
+    solver = ProgressiveSolver(
+        exact_search_min_observations=6,
+        propagate_time_budget=10.0,
+        propagate_time_budget_early=2.0,
+    )
+
+    def passthrough(domains, observations, **kwargs):
+        return domains, 0, 0
+
+    before = time.monotonic()
+    with patch(
+        "orapa_assistant.progressive.propagate_orapa_csp", side_effect=passthrough
+    ) as mocked:
+        solver.add_observations(REAL_GAME_HISTORY[:3])
+
+    deadline = mocked.call_args.kwargs["deadline"]
+    assert deadline - before < 3.0
+
+
+def test_propagate_uses_the_full_budget_at_the_minimum_observation_count() -> None:
+    solver = ProgressiveSolver(
+        exact_search_min_observations=6,
+        propagate_time_budget=10.0,
+        propagate_time_budget_early=2.0,
+    )
+
+    def propagate_passthrough(domains, observations, **kwargs):
+        return domains, 0, 0
+
+    def solve_passthrough(domains, observations, **kwargs):
+        return OrapaModelResult(domains, (), False, False, 0)
+
+    before = time.monotonic()
+    with patch(
+        "orapa_assistant.progressive.propagate_orapa_csp",
+        side_effect=propagate_passthrough,
+    ) as mocked_propagate, patch(
+        "orapa_assistant.progressive.solve_orapa_csp", side_effect=solve_passthrough
+    ):
+        solver.add_observations(REAL_GAME_HISTORY[:6])
+
+    deadline = mocked_propagate.call_args.kwargs["deadline"]
+    assert deadline - before > 8.0
 
 
 def test_the_same_witness_cache_is_reused_across_incremental_solves() -> None:
@@ -52,6 +102,32 @@ def test_exact_solve_is_attempted_at_the_minimum_observation_count() -> None:
     mocked.assert_called_once()
     _, kwargs = mocked.call_args
     assert kwargs["deadline"] is not None
+
+
+def test_cancelled_hook_is_forwarded_to_both_search_stages() -> None:
+    # L'interface graphique interrompt un calcul en cours en réglant ce
+    # signal (p. ex. l'interruption d'un thread) plutôt qu'en attendant une
+    # échéance de temps.
+    solver = ProgressiveSolver(exact_search_min_observations=6)
+    sentinel = lambda: False  # noqa: E731 - identité importe, pas le comportement
+
+    def propagate_passthrough(domains, observations, **kwargs):
+        return domains, 0, 0
+
+    def solve_passthrough(domains, observations, **kwargs):
+        return OrapaModelResult(domains, (), False, False, 0)
+
+    solver.cancelled = sentinel
+    with patch(
+        "orapa_assistant.progressive.propagate_orapa_csp",
+        side_effect=propagate_passthrough,
+    ) as mocked_propagate, patch(
+        "orapa_assistant.progressive.solve_orapa_csp", side_effect=solve_passthrough
+    ) as mocked_solve:
+        solver.add_observations(REAL_GAME_HISTORY[:6])
+
+    assert mocked_propagate.call_args.kwargs["cancelled"] is sentinel
+    assert mocked_solve.call_args.kwargs["cancelled"] is sentinel
 
 
 def test_progressive_solver_waits_then_becomes_exact() -> None:

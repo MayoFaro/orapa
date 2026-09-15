@@ -29,6 +29,66 @@ def test_extensional_constraints_propagate_relations_to_a_fixed_point() -> None:
     assert result.removed_values == 6
 
 
+def test_propagate_processes_lower_cost_constraints_first() -> None:
+    # Une contrainte dont la portée touche un domaine plus petit doit être
+    # révisée avant une contrainte plus coûteuse, même si celle-ci a été
+    # enregistrée en premier — pour que le travail bon marché débroussaille
+    # le terrain avant d'attaquer les contraintes onéreuses.
+    problem = RelationalCSP[str, int]()
+    problem.add_variable("large", range(100))
+    problem.add_variable("small", range(2))
+    log: list[str] = []
+
+    def record(variable, value, domains):
+        log.append(variable)
+        return True
+
+    problem.add_constraint(SupportConstraint(("large",), record))
+    problem.add_constraint(SupportConstraint(("small",), record))
+
+    problem.propagate()
+
+    last_small = max(index for index, name in enumerate(log) if name == "small")
+    first_large = min(index for index, name in enumerate(log) if name == "large")
+    assert last_small < first_large
+
+
+class _CostHintConstraint:
+    """Contrainte de test dont le coût déclaré ne suit pas sa portée."""
+
+    def __init__(self, scope: tuple[str, ...], log: list[str], cost: int) -> None:
+        self.scope = scope
+        self._log = log
+        self._cost = cost
+
+    def has_support(self, variable, value, domains) -> bool:
+        self._log.append(variable)
+        return True
+
+    def estimated_cost(self, domains) -> int:
+        return self._cost
+
+
+def test_propagate_uses_a_constraint_provided_cost_estimate_when_available() -> None:
+    # Deux contraintes portant sur des domaines de même taille (donc le même
+    # coût par défaut) ; l'une déclare explicitement être bien moins chère
+    # via `estimated_cost` — elle doit être révisée en premier, malgré une
+    # portée formelle identique et un enregistrement postérieur.
+    problem = RelationalCSP[str, int]()
+    problem.add_variable("expensive", range(100))
+    problem.add_variable("cheap", range(100))
+    log: list[str] = []
+
+    problem.add_constraint(
+        _CostHintConstraint(("expensive",), log, cost=1_000_000)
+    )
+    problem.add_constraint(_CostHintConstraint(("cheap",), log, cost=1))
+
+    problem.propagate()
+
+    assert log[0] == "cheap"
+
+
 def test_predicate_constraint_search_matches_brute_force() -> None:
     problem = RelationalCSP[str, int]()
     for variable in ("x", "y", "z"):

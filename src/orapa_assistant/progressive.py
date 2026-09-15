@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from math import prod
 from zlib import crc32
 
@@ -25,12 +26,14 @@ class ProgressiveSolver:
         exact_search_min_observations: int = 6,
         exact_time_budget: float = 45.0,
         propagate_time_budget: float = 10.0,
+        propagate_time_budget_early: float = 10.0,
     ) -> None:
         self.include_diamond = include_diamond
         self.include_black_body = include_black_body
         self.exact_search_min_observations = exact_search_min_observations
         self.exact_time_budget = exact_time_budget
         self.propagate_time_budget = propagate_time_budget
+        self.propagate_time_budget_early = propagate_time_budget_early
         definitions = PIECES
         if include_diamond:
             definitions += (DIAMOND,)
@@ -51,6 +54,10 @@ class ProgressiveSolver:
         self._deferred_relation_count = 0
         self._frequency_map: FrequencyMap | None = None
         self._witness_cache: dict = {}
+        # Signal d'annulation externe optionnel (p. ex. l'interruption d'un
+        # thread d'interface graphique), vérifié en plus des échéances de
+        # temps internes. Réglable à tout moment par l'appelant.
+        self.cancelled: Callable[[], bool] | None = None
         self._raw_combination_count = prod(
             len(domain.placements) for domain in self._base_domains
         )
@@ -170,13 +177,22 @@ class ProgressiveSolver:
             )
             return
 
-        propagate_deadline = time.monotonic() + self.propagate_time_budget
+        # En dessous du seuil de résolution exacte, on sait déjà que rien ne
+        # sera prouvé : inutile de laisser le filtrage rapide consommer son
+        # budget complet sur un indice isolé qui ne peut rien démontrer.
+        propagate_budget = (
+            self.propagate_time_budget
+            if len(observations) >= self.exact_search_min_observations
+            else self.propagate_time_budget_early
+        )
+        propagate_deadline = time.monotonic() + propagate_budget
         self._filtered_domains, applied, deferred = propagate_orapa_csp(
             domains,
             observations,
             witness_node_limit=2_000,
             seed=crc32(repr(observations).encode("utf-8")),
             deadline=propagate_deadline,
+            cancelled=self.cancelled,
             witness_cache=self._witness_cache,
         )
         self._applied_relation_count = applied
@@ -193,6 +209,7 @@ class ProgressiveSolver:
                 witness_node_limit=20_000,
                 seed=crc32(repr(observations).encode("utf-8")),
                 deadline=deadline,
+                cancelled=self.cancelled,
                 witness_cache=self._witness_cache,
             )
             self._filtered_domains = model_result.domains

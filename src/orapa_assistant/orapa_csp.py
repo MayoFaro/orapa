@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from math import prod
 from random import Random
 from typing import Callable, Mapping
 
+from .colors import RAY_COLOR_COMPONENTS
 from .constraints import gems_are_compatible
 from .domain_filter import PlacementDomain
 from .ray_witness import (
@@ -16,6 +18,7 @@ from .ray_witness import (
 )
 from .raytracer import Configuration, Gem
 from .relational_csp import RelationalCSP, SupportConstraint
+from .relational_filter import COLOR_PIECE_NAMES
 from .search import configuration_matches
 from .solver import (
     CellContent,
@@ -276,6 +279,40 @@ class _BuiltProblem:
     ray_oracles: list[tuple[Observation, "_RaySupportOracle"]]
 
 
+def _ray_cost_hint(
+    catalog: PlacementCatalog, observation: Observation
+) -> Callable[[Mapping[str, tuple[int, ...]]], int]:
+    """Estime le coût réel d'une contrainte de rayon.
+
+    La portée formelle d'une telle contrainte couvre toutes les pièces (une
+    autre pourrait toujours bloquer le trajet), mais son coût effectif ne
+    dépend en pratique que des pièces dont la couleur peut expliquer le
+    résultat observé — plus le diamant, toujours potentiellement traversé
+    sans ajouter de couleur. Une absorption, elle, peut impliquer n'importe
+    quelle pièce et ne bénéficie d'aucun raccourci. Ce n'est qu'une
+    estimation utilisée pour ordonner la propagation ; elle ne restreint
+    jamais ce qui est réellement vérifié.
+    """
+
+    names = set(catalog.names)
+    if observation.absorbed:
+        relevant = catalog.names
+    else:
+        relevant_list: list[str] = []
+        for color in RAY_COLOR_COMPONENTS[observation.color]:
+            relevant_list.extend(
+                name for name in COLOR_PIECE_NAMES[color] if name in names
+            )
+        if "diamond" in names:
+            relevant_list.append("diamond")
+        relevant = tuple(dict.fromkeys(relevant_list)) or catalog.names
+
+    def cost_hint(domains: Mapping[str, tuple[int, ...]]) -> int:
+        return prod(len(domains[name]) for name in relevant)
+
+    return cost_hint
+
+
 def _build_problem(
     domains: tuple[PlacementDomain, ...],
     observations: tuple[SolverObservation, ...],
@@ -328,7 +365,13 @@ def _build_problem(
                     )
                 )
         ray_oracles.append((observation, oracle))
-        problem.add_constraint(SupportConstraint(catalog.names, oracle))
+        problem.add_constraint(
+            SupportConstraint(
+                catalog.names,
+                oracle,
+                cost_hint=_ray_cost_hint(catalog, observation),
+            )
+        )
 
     return _BuiltProblem(problem, catalog, ray_oracles)
 
@@ -363,6 +406,23 @@ def _domains_from_index_domains(
     )
 
 
+def _combine_cancelled(
+    deadline: float | None, cancelled: Callable[[], bool] | None
+) -> Callable[[], bool] | None:
+    """Fusionne une échéance de temps et un signal d'annulation externe.
+
+    L'un ou l'autre suffit à interrompre la recherche ; ``None`` seulement
+    si aucun des deux n'est fourni.
+    """
+
+    if deadline is None and cancelled is None:
+        return None
+    return (
+        lambda: (deadline is not None and time.monotonic() >= deadline)
+        or (cancelled is not None and cancelled())
+    )
+
+
 def propagate_orapa_csp(
     domains: tuple[PlacementDomain, ...],
     observations: tuple[SolverObservation, ...],
@@ -370,6 +430,7 @@ def propagate_orapa_csp(
     witness_node_limit: int = 2_000,
     seed: int = 0,
     deadline: float | None = None,
+    cancelled: Callable[[], bool] | None = None,
     witness_cache: WitnessCache | None = None,
 ) -> tuple[tuple[PlacementDomain, ...], int, int]:
     """Réduit les domaines par cohérence d'arc seule, sans chercher de modèle.
@@ -387,11 +448,14 @@ def propagate_orapa_csp(
     la contrainte a été pleinement vérifiée (``applied``) et celui dont au
     moins une recherche de témoin a atteint sa limite sans conclure
     (``deferred``).
+
+    ``cancelled``, s'il est fourni, est vérifié en plus de ``deadline`` :
+    n'importe lequel des deux suffit à interrompre la recherche. Sert à
+    brancher un signal d'annulation externe (p. ex. l'interruption d'un
+    thread d'interface graphique) indépendant d'une échéance de temps.
     """
 
-    cancelled = (
-        None if deadline is None else (lambda: time.monotonic() >= deadline)
-    )
+    combined_cancelled = _combine_cancelled(deadline, cancelled)
 
     if any(not domain.placements for domain in domains):
         return domains, 0, 0
@@ -401,7 +465,7 @@ def propagate_orapa_csp(
         observations,
         witness_node_limit=witness_node_limit,
         seed=seed,
-        cancelled=cancelled,
+        cancelled=combined_cancelled,
         witness_cache=witness_cache,
     )
     propagated = built.problem.propagate()
@@ -425,6 +489,7 @@ def solve_orapa_csp(
     witness_node_limit: int = 20_000,
     seed: int = 0,
     deadline: float | None = None,
+    cancelled: Callable[[], bool] | None = None,
     witness_cache: WitnessCache | None = None,
 ) -> OrapaModelResult:
     """Résout les domaines avec des contraintes globales de rayon paresseuses.
@@ -446,11 +511,14 @@ def solve_orapa_csp(
     recherche. Un appelant qui refait successivement des résolutions sur des
     domaines de plus en plus réduits (au fil d'une partie) évite ainsi de
     redémontrer les mêmes témoins à chaque nouvel indice.
+
+    ``cancelled``, s'il est fourni, est vérifié en plus de ``deadline`` :
+    n'importe lequel des deux suffit à interrompre la recherche. Sert à
+    brancher un signal d'annulation externe (p. ex. l'interruption d'un
+    thread d'interface graphique) indépendant d'une échéance de temps.
     """
 
-    cancelled = (
-        None if deadline is None else (lambda: time.monotonic() >= deadline)
-    )
+    combined_cancelled = _combine_cancelled(deadline, cancelled)
 
     if any(not domain.placements for domain in domains):
         return OrapaModelResult(domains, (), True, False, 0)
@@ -460,7 +528,7 @@ def solve_orapa_csp(
         observations,
         witness_node_limit=witness_node_limit,
         seed=seed,
-        cancelled=cancelled,
+        cancelled=combined_cancelled,
         witness_cache=witness_cache,
     )
     problem, catalog, ray_oracles = built.problem, built.catalog, built.ray_oracles
