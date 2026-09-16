@@ -51,25 +51,28 @@ def test_color_selector_returns_enum() -> None:
     assert selector.label_for(RayColor.LIGHT_YELLOW) == "Jaune citron"
 
 
-def test_observation_panel_mirrors_exit_on_user_entry_click() -> None:
+def test_observation_panel_first_click_sets_entry_second_sets_exit() -> None:
     _app()
     panel = ObservationChipPanel()
-    # Un clic utilisateur sur un chip d'entrée : la sortie suit.
-    panel.entry._buttons["8"].click()
+    # Un seul jeu de chips : le premier clic fixe l'entrée...
+    panel.points._buttons["8"].click()
     assert panel.entry.value() == "8"
-    assert panel.exit.value() == "8"
-    # L'utilisateur corrige la sortie sans toucher l'entrée.
-    panel.exit._buttons["12"].click()
+    assert panel.exit.value() is None
+    # ...le second fixe la sortie.
+    panel.points._buttons["12"].click()
     assert panel.entry.value() == "8"
     assert panel.exit.value() == "12"
-    # Nouvelle entrée : la sortie se recale.
-    panel.entry._buttons["C"].click()
-    assert panel.exit.value() == "C"
+    # Un clic de plus recommence une nouvelle saisie.
+    panel.points._buttons["C"].click()
+    assert panel.entry.value() == "C"
+    assert panel.exit.value() is None
 
 
-def test_observation_panel_set_value_does_not_mirror() -> None:
+def test_observation_panel_set_value_does_not_touch_click_sequence() -> None:
     _app()
     panel = ObservationChipPanel()
     panel.entry.set_value("8")
-    # set_value n'émet pas changed : la sortie reste vide.
     assert panel.exit.value() is None
+    panel.exit.set_value("12")
+    assert panel.entry.value() == "8"
+    assert panel.exit.value() == "12"

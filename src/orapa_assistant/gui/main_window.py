@@ -329,9 +329,10 @@ class MainWindow(QMainWindow):
         cell_form.addRow("Résultat de la case", self.cell_content)
         self.cell_container = QWidget()
         self.cell_container.setLayout(cell_form)
+        self._cell_form = cell_form
 
         wave_layout = QVBoxLayout()
-        # La couleur reste à côté d'entrée/sortie (16 boutons sur 8 rangées :
+        # La couleur reste à côté des chips point (16 boutons sur 8 rangées :
         # bien plus haut qu'une ligne de menu, donc l'empiler au-dessus
         # augmenterait la hauteur totale au lieu de la réduire). On lui
         # retire juste son libellé, inutile et un peu de hauteur en moins.
@@ -340,9 +341,22 @@ class MainWindow(QMainWindow):
         color_column.addWidget(self.color_selector, 0, Qt.AlignTop)
         color_column.addStretch(1)
 
+        # Le bouton "Ajouter" vit juste sous les chips point, dans sa propre
+        # colonne : coller sa taille à celle (plus haute) de la colonne
+        # couleur le laissait flotter loin sous les chips point, plus
+        # courtes.
+        self.add_button.setFixedWidth(280)
+        self.add_button.setMinimumHeight(36)
+        points_column = QVBoxLayout()
+        points_column.setContentsMargins(0, 0, 0, 0)
+        points_column.addWidget(self.observation_panel, 0, Qt.AlignTop)
+        points_column.addWidget(self.add_button, 0, Qt.AlignLeft)
+        points_column.addStretch(1)
+        self._points_column = points_column
+
         wave_row = QHBoxLayout()
         wave_row.setContentsMargins(0, 0, 0, 0)
-        wave_row.addWidget(self.observation_panel)
+        wave_row.addLayout(points_column)
         wave_row.addLayout(color_column)
         wave_row.addStretch(1)
 
@@ -357,19 +371,10 @@ class MainWindow(QMainWindow):
         action_row.addWidget(self.action_type)
         action_row.addStretch(1)
 
-        # Largeur bornée à celle d'entrée+sortie : sans ça, le bouton
-        # s'étire aussi sous les chips de couleur, plus larges, au lieu de
-        # se glisser juste sous les chips de lettres.
-        self.add_button.setMaximumWidth(610)
-        add_button_row = QHBoxLayout()
-        add_button_row.addWidget(self.add_button)
-        add_button_row.addStretch(1)
-
         observation_layout = QVBoxLayout()
         observation_layout.addLayout(action_row)
         observation_layout.addWidget(self.wave_container)
         observation_layout.addWidget(self.cell_container)
-        observation_layout.addLayout(add_button_row)
         self.observation_area = QWidget()
         self.observation_area.setLayout(observation_layout)
 
@@ -834,11 +839,23 @@ class MainWindow(QMainWindow):
                 item.setText(str(round(probability * 100)))
                 item.setBackground(_blend_toward_white(base, probability))
 
+    def _place_add_button(self, cell_mode: bool) -> None:
+        # Le bouton "Ajouter" sert aux deux modes mais n'a de place fixe
+        # dans aucun des deux widgets qu'ils partagent : on le déplace donc
+        # vers celui qui est visible, juste sous son contenu.
+        self._points_column.removeWidget(self.add_button)
+        self._cell_form.removeWidget(self.add_button)
+        if cell_mode:
+            self._cell_form.addRow(self.add_button)
+        else:
+            self._points_column.insertWidget(1, self.add_button)
+
     def _update_result_controls(self, force_busy: bool = False) -> None:
         cell_mode = self.action_type.currentData() == "cell"
         black_enabled = self.black_checkbox.isChecked()
         self.wave_container.setVisible(not cell_mode)
         self.cell_container.setVisible(cell_mode)
+        self._place_add_button(cell_mode)
         self.absorbed.setEnabled(not force_busy and black_enabled and not cell_mode)
         result_enabled = (
             not force_busy and not self.absorbed.isChecked() and not cell_mode

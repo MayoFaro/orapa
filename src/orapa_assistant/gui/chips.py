@@ -185,43 +185,187 @@ class ColorChipSelector(_ChipGroup):
         return RAYCOLOR_LABELS[color]
 
 
-class ObservationChipPanel(QWidget):
-    """Regroupe entrée et sortie ; câble l'auto‑report de la sortie.
+class _EntryExitValue:
+    """Vue déléguée sur l'entrée ou la sortie d'un :class:`EntryExitChipSelector`.
 
-    La couleur (``color``) est un sélecteur indépendant : ce panneau le
-    construit et câble l'auto-report, mais ne l'ajoute pas à sa propre
-    disposition — l'appelant le place où il veut (p. ex. à côté d'un autre
-    contrôle, plutôt que sous l'entrée et la sortie).
+    Garde la même API que l'ancien sélecteur dédié (``value``, ``set_value``,
+    ``setEnabled``…) alors que les deux ne partagent plus, visuellement,
+    qu'un seul jeu de chips.
+    """
+
+    def __init__(self, owner: "EntryExitChipSelector", which: str) -> None:
+        self._owner = owner
+        self._which = which
+
+    def value(self) -> str | None:
+        return self._owner._value(self._which)
+
+    def set_value(self, point: str | None) -> None:
+        self._owner._set_value(self._which, point)
+
+    def clear(self) -> None:
+        self.set_value(None)
+
+    def setEnabled(self, enabled: bool) -> None:  # noqa: N802 (API Qt)
+        self._owner._set_enabled(self._which, enabled)
+
+    def isEnabled(self) -> bool:  # noqa: N802 (API Qt)
+        return self._owner._enabled(self._which)
+
+
+class EntryExitChipSelector(QWidget):
+    """Un seul jeu de chips point (chiffres + lettres) pour entrée ET sortie.
+
+    Le premier clic fixe l'entrée, le second la sortie ; un clic
+    supplémentaire recommence une nouvelle saisie. Un libellé au-dessus des
+    chips confirme ce qui vient d'être choisi — sans lui, rien ne montre
+    qu'un clic a bien été pris en compte avant que la sortie ne soit fixée
+    à son tour.
+    """
+
+    changed = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._entry: str | None = None
+        self._exit: str | None = None
+        self._entry_enabled = True
+        self._exit_enabled = True
+        self._buttons: dict[str, QPushButton] = {}
+
+        self._feedback = _label("Point : —")
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(2)
+        outer.addWidget(self._feedback)
+        outer.addWidget(_label("Chiffres"))
+        outer.addLayout(self._grid((TOP_POINTS, RIGHT_POINTS)))
+        outer.addWidget(_label("Lettres"))
+        outer.addLayout(self._grid((LEFT_POINTS, BOTTOM_POINTS)))
+
+        self.entry = _EntryExitValue(self, "entry")
+        self.exit = _EntryExitValue(self, "exit")
+
+    def _grid(self, rows: Iterable[Sequence[str]]) -> QGridLayout:
+        grid = QGridLayout()
+        grid.setSpacing(2)
+        for row_index, points in enumerate(rows):
+            for column_index, point in enumerate(points):
+                button = QPushButton(point)
+                button.setFixedSize(28, 24)
+                button.setFocusPolicy(Qt.NoFocus)
+                button.clicked.connect(
+                    lambda _checked=False, point=point: self._handle_click(point)
+                )
+                self._buttons[point] = button
+                grid.addWidget(button, row_index, column_index)
+        return grid
+
+    def _handle_click(self, point: str) -> None:
+        if self._entry is None or not self._exit_enabled:
+            # Rien n'est encore choisi, ou la sortie est désactivée (onde
+            # absorbée) : chaque clic redéfinit l'entrée.
+            if not self._entry_enabled:
+                return
+            self._entry = point
+            self._exit = None
+        elif self._exit is None:
+            self._exit = point
+        else:
+            # Entrée et sortie déjà fixées : on recommence une saisie.
+            self._entry = point
+            self._exit = None
+        self._refresh()
+        self.changed.emit()
+
+    def _value(self, which: str) -> str | None:
+        return self._entry if which == "entry" else self._exit
+
+    def _set_value(self, which: str, point: str | None) -> None:
+        if point is not None and point not in self._buttons:
+            raise KeyError(f"chip inconnu : {point!r}")
+        if which == "entry":
+            self._entry = point
+        else:
+            self._exit = point
+        self._refresh()
+
+    def _enabled(self, which: str) -> bool:
+        return self._entry_enabled if which == "entry" else self._exit_enabled
+
+    def _set_enabled(self, which: str, enabled: bool) -> None:
+        if which == "entry":
+            self._entry_enabled = enabled
+        else:
+            self._exit_enabled = enabled
+        for button in self._buttons.values():
+            button.setEnabled(self._entry_enabled)
+
+    def _refresh(self) -> None:
+        for point, button in self._buttons.items():
+            if point == self._entry and point == self._exit:
+                style = (
+                    "background-color:#f6c431; font-weight:bold;"
+                    " border:2px solid palette(highlight); border-radius:3px;"
+                )
+            elif point == self._entry:
+                style = (
+                    "background-color:#a9d3ec; font-weight:bold;"
+                    " border:2px solid palette(highlight); border-radius:3px;"
+                )
+            elif point == self._exit:
+                style = (
+                    "background-color:#f2a6c0; font-weight:bold;"
+                    " border:2px solid palette(highlight); border-radius:3px;"
+                )
+            else:
+                style = ""
+            button.setStyleSheet(style)
+        if self._entry is None:
+            text = "Point : —"
+        elif self._exit is None:
+            text = f"Entrée : {self._entry}"
+        else:
+            text = f"Entrée : {self._entry}  →  Sortie : {self._exit}"
+        self._feedback.setText(text)
+
+    def clear(self) -> None:
+        self._entry = None
+        self._exit = None
+        self._refresh()
+
+
+class ObservationChipPanel(QWidget):
+    """Regroupe entrée, sortie et couleur pour composer une observation.
+
+    Entrée et sortie partagent un seul jeu de chips point (voir
+    :class:`EntryExitChipSelector`). La couleur (``color``) reste un
+    sélecteur indépendant, non ajouté à la disposition de ce panneau —
+    l'appelant le place où il veut.
     """
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.entry = BorderChipSelector("Entrée")
-        self.exit = BorderChipSelector("Sortie")
+        self.points = EntryExitChipSelector()
+        self.entry = self.points.entry
+        self.exit = self.points.exit
         self.color = ColorChipSelector()
-        self.entry.changed.connect(self._mirror_exit)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(14)
-        layout.addWidget(self.entry, 0, Qt.AlignTop)
-        layout.addWidget(self.exit, 0, Qt.AlignTop)
+        layout.addWidget(self.points, 0, Qt.AlignTop)
         layout.addStretch(1)
 
-    def _mirror_exit(self) -> None:
-        # Par défaut la sortie suit l'entrée ; l'utilisateur peut ensuite
-        # cliquer un autre chip de sortie pour la corriger.
-        self.exit.set_value(self.entry.value())
-
     def clear(self) -> None:
-        self.entry.clear()
-        self.exit.clear()
+        self.points.clear()
         self.color.clear()
 
 
 __all__ = [
     "BorderChipSelector",
     "ColorChipSelector",
+    "EntryExitChipSelector",
     "ObservationChipPanel",
     "RAYCOLOR_HEX",
     "RAYCOLOR_LABELS",
