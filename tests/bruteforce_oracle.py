@@ -14,6 +14,7 @@ from itertools import product
 from math import log2
 from typing import Hashable, Iterable
 
+from orapa_assistant.border import ALL_BORDER_POINTS
 from orapa_assistant.constraints import gems_are_compatible
 from orapa_assistant.domain_filter import PlacementDomain
 from orapa_assistant.raytracer import Configuration, simulate_ray
@@ -27,6 +28,14 @@ from orapa_assistant.solver import (
 
 Action = tuple[str, str]
 
+ALL_ACTIONS: tuple[Action, ...] = tuple(
+    ("wave", entry) for entry in ALL_BORDER_POINTS
+) + tuple(
+    ("cell", f"{row}{column}")
+    for row in "ABCDEFGH"
+    for column in range(1, 11)
+)
+
 
 @dataclass(frozen=True)
 class OracleScore:
@@ -34,6 +43,7 @@ class OracleScore:
     target: str
     entropy: float
     worst_case: int
+    win_probability: float
     expected_remaining: float
     outcome_count: int
 
@@ -160,11 +170,66 @@ def score_action(
         for size in groups
     )
     expected = sum(size * size for size in groups) / total
+    win_probability = sum(1 for size in groups if size == 1) / total
     return OracleScore(
         action,
         target,
         entropy,
         max(groups),
+        win_probability,
         expected,
         len(groups),
     )
+
+
+def best_single_action_worst_case(
+    configurations: Iterable[Configuration], excluded: Iterable[Action] = ()
+) -> int:
+    """Meilleur pire cas atteignable par une unique action supplémentaire.
+
+    Recalculée indépendamment de `Solver._best_single_move_worst_case`, en
+    repartant uniquement de `partition_sizes` et de l'énumération complète
+    des actions — sert d'oracle pour `next_mover_win_probability`.
+    """
+
+    configurations = tuple(configurations)
+    total = len(configurations)
+    if total <= 1:
+        return total
+    excluded = set(excluded)
+    best = total
+    for action, target in ALL_ACTIONS:
+        if (action, target) in excluded:
+            continue
+        best = min(best, max(partition_sizes(configurations, action, target)))
+        if best <= 1:
+            return best
+    return best
+
+
+def next_mover_win_probability(
+    configurations: Iterable[Configuration], action: str, target: str
+) -> float:
+    """Fraction des candidats pour lesquels, après une branche non gagnante
+    de cette action, un unique coup supplémentaire suffirait à conclure —
+    voir `Solver._augment_with_next_mover_risk` pour la version testée."""
+
+    configurations = tuple(configurations)
+    total = len(configurations)
+    groups: dict[Hashable, list[Configuration]] = {}
+    for configuration in configurations:
+        groups.setdefault(
+            action_outcome(configuration, action, target), []
+        ).append(configuration)
+    excluded = {(action, target)}
+    wins = 0
+    for branch in groups.values():
+        size = len(branch)
+        if size <= 1:
+            continue
+        if size <= 2:
+            wins += size
+            continue
+        if best_single_action_worst_case(branch, excluded) <= 2:
+            wins += size
+    return wins / total

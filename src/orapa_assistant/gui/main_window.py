@@ -303,6 +303,12 @@ class MainWindow(QMainWindow):
         self.diamond_checkbox.toggled.connect(self._change_variants)
         self.black_checkbox.toggled.connect(self._change_variants)
 
+        self.opponent_starts_checkbox = QCheckBox("L’adversaire commence")
+        self.opponent_starts_checkbox.setChecked(
+            getattr(solver, "opponent_starts", False)
+        )
+        self.opponent_starts_checkbox.toggled.connect(self._change_opponent_starts)
+
         self.observation_panel = ObservationChipPanel()
         self.entry_selector = self.observation_panel.entry
         self.exit_selector = self.observation_panel.exit
@@ -390,6 +396,7 @@ class MainWindow(QMainWindow):
         grid_side_choices = QVBoxLayout()
         grid_side_choices.addWidget(self.diamond_checkbox)
         grid_side_choices.addWidget(self.black_checkbox)
+        grid_side_choices.addWidget(self.opponent_starts_checkbox)
         solution_view_row = QHBoxLayout()
         solution_view_row.addWidget(self.solution_view_label)
         solution_view_row.addWidget(self.solution_view)
@@ -674,6 +681,9 @@ class MainWindow(QMainWindow):
                     include_black_body=getattr(
                         self.solver, "include_black_body", False
                     ),
+                    opponent_starts=getattr(
+                        self.solver, "opponent_starts", False
+                    ),
                     reason="new_game",
                 )
             self.solver.clear()
@@ -689,6 +699,7 @@ class MainWindow(QMainWindow):
             include_black_body=getattr(
                 self.solver, "include_black_body", False
             ),
+            opponent_starts=getattr(self.solver, "opponent_starts", False),
         )
 
     def closeEvent(self, event) -> None:
@@ -742,10 +753,57 @@ class MainWindow(QMainWindow):
                 if getattr(self.solver, "recommendation_exact", True)
                 else "estimée"
             )
-            self.recommendation_label.setText(
-                f"Action conseillée ({qualifier}) : {best.label}\n"
-                f"Pire cas : {best.worst_case} — Entropie : {best.entropy:.2f} bits"
-            )
+            # C'est parfois l'adversaire qui joue le prochain coup (on vient
+            # de jouer le nôtre) : le meilleur coup calculé ici est alors le
+            # sien, pas le nôtre — la présentation doit le dire clairement,
+            # sans quoi « 100% de chances de gagner » se lirait comme une
+            # promesse alors que c'est une menace.
+            my_turn = getattr(self.solver, "my_turn", True)
+            action_label = "Action conseillée" if my_turn else "Menace de l’adversaire"
+            lines = [
+                f"{action_label} ({qualifier}) : {best.label}",
+                f"Pire cas : {best.worst_case} — Entropie : {best.entropy:.2f} bits",
+            ]
+            # Le pire cas ne dit que la moitié de l'histoire : un coup peut
+            # aussi, pour un autre résultat possible, donner directement la
+            # solution complète. Affiché même à 0% — sans quoi rien ne
+            # distingue « aucune chance, vérifié » de « pas évalué du tout »,
+            # ce qui a désorienté en test : un coup à 0%/0% est justement le
+            # choix le plus sûr possible, pas une absence d'information.
+            if my_turn:
+                marker = "✓" if best.win_probability > 0 else "·"
+                lines.append(
+                    f"{marker} {best.win_probability:.0%} de chances que ce "
+                    "coup vous donne déjà la solution."
+                )
+            else:
+                marker = "⚠️" if best.win_probability > 0 else "·"
+                lines.append(
+                    f"{marker} {best.win_probability:.0%} de chances que ce "
+                    "coup donne déjà la solution à l’adversaire."
+                )
+            # Et le complément : parmi les résultats qui NE tranchent PAS
+            # tout de suite, quelle part laisse à qui joue ensuite (nous ou
+            # l'adversaire selon le tour) un coup capable de conclure à sa
+            # place — la question qui manquait : jouer un coup n'est pas
+            # neutre quand on ne gagne pas soi-même, il peut aussi offrir la
+            # victoire en face. Absent seulement quand ce n'est pas encore
+            # calculé (trop de candidats, hors régime de fin de partie).
+            if best.next_mover_win_probability is not None:
+                if my_turn:
+                    marker = "⚠️" if best.next_mover_win_probability > 0 else "·"
+                    lines.append(
+                        f"{marker} {best.next_mover_win_probability:.0%} de "
+                        "chances, sinon, que l’adversaire puisse ensuite "
+                        "conclure."
+                    )
+                else:
+                    marker = "✓" if best.next_mover_win_probability > 0 else "·"
+                    lines.append(
+                        f"{marker} {best.next_mover_win_probability:.0%} de "
+                        "chances, sinon, que vous puissiez ensuite conclure."
+                    )
+            self.recommendation_label.setText("\n".join(lines))
         else:
             if self.solver.candidate_count == 1:
                 self.recommendation_label.setText(
@@ -944,11 +1002,13 @@ class MainWindow(QMainWindow):
             self.absorbed.setChecked(False)
         include_diamond = self.diamond_checkbox.isChecked()
         include_black_body = self.black_checkbox.isChecked()
+        opponent_starts = getattr(self.solver, "opponent_starts", False)
         if self.history_store is not None:
             try:
                 self.history_store.start_new_game(
                     include_diamond=include_diamond,
                     include_black_body=include_black_body,
+                    opponent_starts=opponent_starts,
                     reason="variant_change",
                 )
             except OSError as error:
@@ -971,7 +1031,24 @@ class MainWindow(QMainWindow):
         self.solver = ProgressiveSolver(
             include_diamond=include_diamond,
             include_black_body=include_black_body,
+            opponent_starts=opponent_starts,
         )
         self._refresh_cell_contents()
         self._update_result_controls()
+        self.refresh()
+
+    def _change_opponent_starts(self) -> None:
+        # Contrairement aux variantes, savoir qui a ouvert la partie ne
+        # change rien au filtrage des configurations : pas besoin d'archiver
+        # ni de recalculer, juste réinterpréter à qui profite la
+        # recommandation déjà connue.
+        self.solver.opponent_starts = self.opponent_starts_checkbox.isChecked()
+        try:
+            self._persist_current()
+        except OSError as error:
+            QMessageBox.warning(
+                self,
+                "Historique non sauvegardé",
+                f"Impossible d’enregistrer ce réglage : {error}",
+            )
         self.refresh()

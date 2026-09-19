@@ -23,6 +23,7 @@ class ProgressiveSolver:
         *,
         include_diamond: bool = False,
         include_black_body: bool = False,
+        opponent_starts: bool = False,
         exact_search_min_observations: int = 6,
         exact_time_budget: float = 45.0,
         propagate_time_budget: float = 10.0,
@@ -30,6 +31,13 @@ class ProgressiveSolver:
     ) -> None:
         self.include_diamond = include_diamond
         self.include_black_body = include_black_body
+        # Coups et cases sont publics et illimités, mais chaque joueur n'a
+        # que deux propositions de solution complète : si un coup laisse une
+        # branche qu'un unique coup supplémentaire peut trancher, celui qui
+        # joue ensuite en profite. Savoir qui a ouvert la partie est donc la
+        # seule information de tour nécessaire pour déterminer à qui profite
+        # un coup donné — voir `my_turn`.
+        self.opponent_starts = opponent_starts
         self.exact_search_min_observations = exact_search_min_observations
         self.exact_time_budget = exact_time_budget
         self.propagate_time_budget = propagate_time_budget
@@ -65,6 +73,23 @@ class ProgressiveSolver:
     @property
     def history(self) -> tuple[SolverObservation, ...]:
         return tuple(self._history)
+
+    def _mover(self, index: int) -> str:
+        """Qui a joué (ou jouera) le coup d'indice `index` de l'historique."""
+
+        return "opponent" if (index % 2 == 0) == self.opponent_starts else "me"
+
+    @property
+    def my_turn(self) -> bool:
+        """Vrai si c'est à nous de jouer le prochain coup.
+
+        Sert à distinguer une recommandation qui nous est réellement
+        destinée d'une simple évaluation du meilleur coup de l'adversaire —
+        les deux se calculent de la même façon, seul le tour change qui en
+        profite en premier.
+        """
+
+        return self._mover(len(self._history)) == "me"
 
     @property
     def raw_combination_count(self) -> int:

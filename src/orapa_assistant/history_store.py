@@ -22,6 +22,7 @@ class SavedGame:
     recorded_at: str
     include_diamond: bool
     include_black_body: bool
+    opponent_starts: bool
     observations: tuple[SolverObservation, ...]
     reason: str
 
@@ -116,12 +117,17 @@ class HistoryStore:
                     reason = raw.get("reason")
                     include_diamond = raw.get("include_diamond")
                     include_black_body = raw.get("include_black_body")
+                    # Absent des journaux antérieurs à son introduction : on
+                    # suppose alors "je commence", comportement historique
+                    # implicite avant que la question ne se pose.
+                    opponent_starts = raw.get("opponent_starts", False)
                     if (
                         not isinstance(session_id, str)
                         or not isinstance(recorded_at, str)
                         or not isinstance(reason, str)
                         or not isinstance(include_diamond, bool)
                         or not isinstance(include_black_body, bool)
+                        or not isinstance(opponent_starts, bool)
                     ):
                         continue
                 except (json.JSONDecodeError, TypeError, ValueError):
@@ -132,6 +138,7 @@ class HistoryStore:
                         recorded_at=recorded_at,
                         include_diamond=include_diamond,
                         include_black_body=include_black_body,
+                        opponent_starts=opponent_starts,
                         observations=observations,
                         reason=reason,
                     )
@@ -151,6 +158,7 @@ class HistoryStore:
             "reason": game.reason,
             "include_diamond": game.include_diamond,
             "include_black_body": game.include_black_body,
+            "opponent_starts": game.opponent_starts,
             "observations": [
                 observation_to_dict(observation)
                 for observation in game.observations
@@ -188,6 +196,7 @@ class HistoryStore:
         *,
         include_diamond: bool = False,
         include_black_body: bool = False,
+        opponent_starts: bool = False,
     ) -> SavedGame:
         with self._lock:
             current = self.load_current()
@@ -196,6 +205,7 @@ class HistoryStore:
             return self._start_session(
                 include_diamond=include_diamond,
                 include_black_body=include_black_body,
+                opponent_starts=opponent_starts,
                 reason="initial",
             )
 
@@ -204,6 +214,7 @@ class HistoryStore:
         *,
         include_diamond: bool,
         include_black_body: bool,
+        opponent_starts: bool,
         reason: str,
     ) -> SavedGame:
         game = SavedGame(
@@ -211,6 +222,7 @@ class HistoryStore:
             recorded_at=self._timestamp(),
             include_diamond=include_diamond,
             include_black_body=include_black_body,
+            opponent_starts=opponent_starts,
             observations=(),
             reason=reason,
         )
@@ -222,12 +234,14 @@ class HistoryStore:
         *,
         include_diamond: bool,
         include_black_body: bool,
+        opponent_starts: bool = False,
         reason: str,
     ) -> SavedGame:
         with self._lock:
             return self._start_session(
                 include_diamond=include_diamond,
                 include_black_body=include_black_body,
+                opponent_starts=opponent_starts,
                 reason=reason,
             )
 
@@ -237,6 +251,7 @@ class HistoryStore:
         *,
         include_diamond: bool,
         include_black_body: bool,
+        opponent_starts: bool = False,
     ) -> SavedGame:
         with self._lock:
             saved_observations = tuple(observations)
@@ -245,12 +260,14 @@ class HistoryStore:
                 current = self._start_session(
                     include_diamond=include_diamond,
                     include_black_body=include_black_body,
+                    opponent_starts=opponent_starts,
                     reason="initial",
                 )
             if (
                 current.observations == saved_observations
                 and current.include_diamond == include_diamond
                 and current.include_black_body == include_black_body
+                and current.opponent_starts == opponent_starts
             ):
                 return current
             saved = SavedGame(
@@ -258,6 +275,7 @@ class HistoryStore:
                 recorded_at=self._timestamp(),
                 include_diamond=include_diamond,
                 include_black_body=include_black_body,
+                opponent_starts=opponent_starts,
                 observations=saved_observations,
                 reason="autosave",
             )

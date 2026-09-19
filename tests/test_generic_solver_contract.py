@@ -10,10 +10,15 @@ from orapa_assistant.domain_filter import PlacementDomain
 from orapa_assistant.geometry import doubled_polygon
 from orapa_assistant.raytracer import Configuration, Gem
 from orapa_assistant.search import search_configurations
-from orapa_assistant.solver import Solver
+from orapa_assistant.solver import (
+    ENDGAME_MAX_CANDIDATES_FOR_FOLLOWUP,
+    ENDGAME_RISK_SHORTLIST_SIZE,
+    Solver,
+)
 from tests.bruteforce_oracle import (
     configuration_key,
     legal_configurations,
+    next_mover_win_probability,
     observe,
     score_action,
     solve,
@@ -157,6 +162,7 @@ def test_every_recommendation_metric_matches_an_independent_partition() -> None:
         assert score.expected_remaining == pytest.approx(expected.expected_remaining)
         assert score.entropy == pytest.approx(expected.entropy)
         assert score.outcome_count == expected.outcome_count
+        assert score.win_probability == pytest.approx(expected.win_probability)
 
     expected_scores = [
         score_action(solver.candidates, "wave", entry)
@@ -175,19 +181,46 @@ def test_every_recommendation_metric_matches_an_independent_partition() -> None:
         (score.action, score.target) for score in expected_scores
     }
 
-    minimum_worst_case = min(score.worst_case for score in expected_scores)
-    minimum_expected = min(
-        score.expected_remaining
-        for score in expected_scores
-        if score.worst_case == minimum_worst_case
-    )
-    maximum_entropy = max(
-        score.entropy
-        for score in expected_scores
-        if score.worst_case == minimum_worst_case
-        and score.expected_remaining == pytest.approx(minimum_expected)
-    )
     best = scores[0]
-    assert best.worst_case == minimum_worst_case
-    assert best.expected_remaining == pytest.approx(minimum_expected)
-    assert best.entropy == pytest.approx(maximum_entropy)
+    if len(solver.candidates) > ENDGAME_MAX_CANDIDATES_FOR_FOLLOWUP:
+        # Hors du régime de fin de partie, le classement reste le critère
+        # glouton pur : pire cas minimal, puis moyenne, puis entropie.
+        minimum_worst_case = min(score.worst_case for score in expected_scores)
+        minimum_expected = min(
+            score.expected_remaining
+            for score in expected_scores
+            if score.worst_case == minimum_worst_case
+        )
+        maximum_entropy = max(
+            score.entropy
+            for score in expected_scores
+            if score.worst_case == minimum_worst_case
+            and score.expected_remaining == pytest.approx(minimum_expected)
+        )
+        assert best.worst_case == minimum_worst_case
+        assert best.expected_remaining == pytest.approx(minimum_expected)
+        assert best.entropy == pytest.approx(maximum_entropy)
+    else:
+        # En fin de partie, le coup recommandé n'est plus nécessairement
+        # celui qui minimise le pire cas : parmi les
+        # `ENDGAME_RISK_SHORTLIST_SIZE` meilleurs coups selon ce critère,
+        # c'est celui qui maximise l'écart entre nos chances de conclure et
+        # celles de l'adversaire. Revérifié ici avec l'oracle,
+        # indépendamment du solveur.
+        shortlist = sorted(expected_scores, key=lambda score: score.sort_key)[
+            :ENDGAME_RISK_SHORTLIST_SIZE
+        ]
+
+        def oracle_net_advantage(oracle_score) -> float:
+            return oracle_score.win_probability - next_mover_win_probability(
+                solver.candidates, oracle_score.action, oracle_score.target
+            )
+
+        best_net_advantage = max(oracle_net_advantage(score) for score in shortlist)
+        matching_oracle = next(
+            score for score in shortlist
+            if (score.action, score.target) == (best.action, best.target)
+        )
+        assert oracle_net_advantage(matching_oracle) == pytest.approx(
+            best_net_advantage
+        )

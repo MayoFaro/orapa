@@ -46,6 +46,7 @@ def _run_gui() -> int:
         solver = ProgressiveSolver(
             include_diamond=saved_game.include_diamond,
             include_black_body=saved_game.include_black_body,
+            opponent_starts=saved_game.opponent_starts,
         )
         if saved_game.observations:
             print(
