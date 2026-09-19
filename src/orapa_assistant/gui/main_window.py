@@ -170,6 +170,12 @@ class MainWindow(QMainWindow):
         self.history_store = history_store
         self._worker: SolverWorker | None = None
         self.setWindowTitle("Orapa Mine Assistant")
+        # Hauteur retenue pour chaque onglet (« Saisie » / « Certitudes et
+        # conseils »), pour la restaurer lors d'un changement d'onglet
+        # plutôt que d'imposer systématiquement la taille par défaut — voir
+        # `_switch_panel`.
+        self._panel_heights: dict[int, int] = {}
+        self._current_panel_index: int | None = None
 
         self.board = QTableWidget(8, 10)
         self.board.setHorizontalHeaderLabels([str(number) for number in range(1, 11)])
@@ -461,13 +467,38 @@ class MainWindow(QMainWindow):
         self.grid_window.show()
 
     def _switch_panel(self, index: int) -> None:
+        # On relève la hauteur courante — qu'elle soit celle par défaut ou
+        # un redimensionnement manuel de l'utilisateur — juste avant de
+        # quitter l'onglet, pour la restaurer telle quelle à son prochain
+        # affichage. Comme la mesure se fait ici plutôt que dans un
+        # `resizeEvent` général, il n'y a pas besoin de distinguer un
+        # redimensionnement « utilisateur » d'un redimensionnement
+        # « programmatique » déclenché par ce même changement d'onglet.
+        if self._current_panel_index is not None:
+            self._panel_heights[self._current_panel_index] = self.height()
+        self._current_panel_index = index
         self.entry_panel.setVisible(index == 0)
         self.grid_side_widget.setVisible(index == 1)
         # Sans ça, la fenêtre garde la hauteur du volet le plus haut même une
         # fois basculée sur l'autre, plus court — elle doit épouser le volet
-        # affiché, pas le maximum des deux.
-        self.centralWidget().layout().activate()
-        self.resize(self.centralWidget().sizeHint())
+        # affiché, pas le maximum des deux. `invalidate()` est nécessaire
+        # avant `activate()` : sans lui, `sizeHint()` peut encore renvoyer
+        # une valeur mise en cache pour l'ancienne visibilité des volets. Le
+        # layout interne (celui du widget central) ET celui de la fenêtre
+        # (QMainWindowLayout, qui garde lui aussi une taille minimale en
+        # cache) doivent tous les deux être invalidés : sans le second, le
+        # `resize()` ci-dessous est silencieusement replafonné à l'ancienne
+        # taille minimale mémorisée par la fenêtre.
+        inner_layout = self.centralWidget().layout()
+        inner_layout.invalidate()
+        inner_layout.activate()
+        outer_layout = self.layout()
+        outer_layout.invalidate()
+        outer_layout.activate()
+        target_height = self._panel_heights.get(index)
+        if target_height is None:
+            target_height = self.centralWidget().sizeHint().height()
+        self.resize(self.width(), target_height)
 
     def _add_observation(self) -> None:
         try:
@@ -492,6 +523,11 @@ class MainWindow(QMainWindow):
         except ValueError as error:
             QMessageBox.warning(self, "Saisie incomplète", str(error))
             return
+        # La case ne doit pas rester cochée pour la saisie suivante : la
+        # plupart des ondes ne sont pas absorbées, mieux vaut décocher par
+        # défaut une fois l'observation ajoutée plutôt que forcer l'utilisateur
+        # à le faire à chaque fois.
+        self.absorbed.setChecked(False)
         # Confirmation immédiate, avant même que le calcul ne démarre : sans
         # ça, un ajout pendant que le moteur travaille encore n'apparaît
         # dans l'historique qu'une fois CE calcul terminé, ce qui peut
